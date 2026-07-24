@@ -1,0 +1,36 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "play-ezasapi",
+	"account_id": "890f43004f700d06eade9fd5147c8aa5",
+	"main": "./src/worker/index.ts",
+	"compatibility_date": "2026-07-24",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"assets": {
+		"directory": "./dist/client",
+		"not_found_handling": "single-page-application",
+		"binding": "ASSETS",
+		"run_worker_first": ["/api/*"]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "HASHES",
+			"id": "fdaf6f7ff5c24be09b8332785754fde6"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "ENTERTAINMENTVIDEOS",
+			"bucket_name": "entertainmentvideos"
+		}
+	],
+	"routes": [
+		{
+			"pattern": "play.ezasapi.com/*",
+			"zone_id": "f0c332ebb29ca9fec47cb18709894d8a"
+		}
+	]
+}
