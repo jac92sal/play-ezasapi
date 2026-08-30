@@ -306,6 +306,72 @@ app.post("/api/upload/register", async (c) => {
 	return c.json({ ok: true, key, size: head.size });
 });
 
+const SYNC_KEY = "sync:last";
+
+export interface SyncReport {
+	/** When the sync run finished (ISO 8601, set by the worker, not the client). */
+	at: string;
+	/** Did the run finish without a fatal error? */
+	ok: boolean;
+	/** Video files seen in the source folder. */
+	scanned: number;
+	/** Files newly uploaded this run. */
+	uploaded: number;
+	/** Files skipped because the same content is already in the bucket. */
+	skippedContent: number;
+	/** Files skipped because the same key is already in the bucket. */
+	skippedName: number;
+	/** Free-form origin label, e.g. "JACOB-PC:C:\\Users\\jacob\\OneDrive\\Videos". */
+	source: string;
+	/** Failure detail when ok is false. */
+	error?: string;
+}
+
+/**
+ * Heartbeat written by the sync script at the end of every run (success or
+ * failure). This is what makes "did the daily sync actually run?" answerable
+ * without shell access to the machine that runs it.
+ */
+app.post("/api/sync/heartbeat", async (c) => {
+	const body = await c.req.json<Partial<SyncReport>>().catch(() => null);
+	if (!body) return c.json({ error: "bad body" }, 400);
+
+	const num = (v: unknown): number =>
+		typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+
+	const report: SyncReport = {
+		at: new Date().toISOString(),
+		ok: body.ok !== false,
+		scanned: num(body.scanned),
+		uploaded: num(body.uploaded),
+		skippedContent: num(body.skippedContent),
+		skippedName: num(body.skippedName),
+		source: String(body.source ?? "unknown").slice(0, 200),
+	};
+	if (body.error) report.error = String(body.error).slice(0, 500);
+
+	await c.env.HASHES.put(SYNC_KEY, JSON.stringify(report));
+	return c.json({ ok: true, at: report.at });
+});
+
+/** Last sync report, plus how long ago it was. `last` is null if none ever ran. */
+app.get("/api/sync/status", async (c) => {
+	const raw = await c.env.HASHES.get(SYNC_KEY);
+	if (!raw) return c.json({ last: null, ageHours: null });
+	let last: SyncReport;
+	try {
+		last = JSON.parse(raw) as SyncReport;
+	} catch {
+		return c.json({ last: null, ageHours: null });
+	}
+	const ageHours = (Date.now() - Date.parse(last.at)) / 3_600_000;
+	return c.json(
+		{ last, ageHours: Number.isFinite(ageHours) ? ageHours : null },
+		200,
+		{ "Cache-Control": "no-cache" },
+	);
+});
+
 app.post("/api/upload/abort", async (c) => {
 	const { key, uploadId } = await c.req.json<{ key?: string; uploadId?: string }>();
 	if (!key || !uploadId) return c.json({ error: "bad params" }, 400);

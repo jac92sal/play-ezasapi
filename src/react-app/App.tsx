@@ -11,6 +11,22 @@ interface VideoEntry {
 	etag: string;
 }
 
+interface SyncReport {
+	at: string;
+	ok: boolean;
+	scanned: number;
+	uploaded: number;
+	skippedContent: number;
+	skippedName: number;
+	source: string;
+	error?: string;
+}
+
+interface SyncStatus {
+	last: SyncReport | null;
+	ageHours: number | null;
+}
+
 type SortMode = "newest" | "oldest" | "name" | "size";
 
 function streamUrl(key: string): string {
@@ -30,6 +46,37 @@ function formatDate(iso: string): string {
 		month: "short",
 		day: "numeric",
 	});
+}
+
+function formatAge(hours: number): string {
+	if (hours < 1) return "just now";
+	if (hours < 24) return `${Math.round(hours)}h ago`;
+	const days = Math.round(hours / 24);
+	return `${days}d ago`;
+}
+
+/** One-line summary of the last sync run for the topbar. */
+function syncLabel(status: SyncStatus): { text: string; stale: boolean; title: string } {
+	const { last, ageHours } = status;
+	if (!last || ageHours === null) {
+		return {
+			text: "Sync: never run",
+			stale: true,
+			title: "No sync run has ever reported in. See docs/SYNC.md to set up the daily sync.",
+		};
+	}
+	// The sync is meant to run daily; give it a grace period before nagging.
+	const stale = !last.ok || ageHours > 36;
+	const when = formatAge(ageHours);
+	const text = last.ok ? `Synced ${when}` : `Sync failed ${when}`;
+	const detail = last.ok
+		? `${last.uploaded} new, ${last.scanned} scanned`
+		: (last.error ?? "unknown error");
+	return {
+		text,
+		stale,
+		title: `${new Date(last.at).toLocaleString()} — ${detail} (${last.source})`,
+	};
 }
 
 function prettyName(name: string): string {
@@ -153,6 +200,7 @@ export default function App() {
 	const [autoNext, setAutoNext] = useState(true);
 	const [shuffle, setShuffle] = useState(false);
 	const [showUpload, setShowUpload] = useState(false);
+	const [sync, setSync] = useState<SyncStatus | null>(null);
 	const playerRef = useRef<HTMLVideoElement>(null);
 
 	const loadVideos = useCallback(() => {
@@ -177,9 +225,20 @@ export default function App() {
 			.finally(() => setLoading(false));
 	}, []);
 
+	const loadSync = useCallback(() => {
+		fetch("/api/sync/status")
+			.then((r) => (r.ok ? (r.json() as Promise<SyncStatus>) : null))
+			.then((data) => setSync(data))
+			.catch(() => setSync(null));
+	}, []);
+
 	useEffect(() => {
 		loadVideos();
 	}, [loadVideos]);
+
+	useEffect(() => {
+		if (locked === false) loadSync();
+	}, [locked, loadSync]);
 
 	const queue = useMemo(() => {
 		const q = query.trim().toLowerCase();
@@ -205,6 +264,7 @@ export default function App() {
 	}, [videos, query, sort]);
 
 	const current = nowPlaying !== null ? queue[nowPlaying] : null;
+	const syncInfo = useMemo(() => (sync ? syncLabel(sync) : null), [sync]);
 
 	const goTo = useCallback(
 		(index: number) => {
@@ -278,6 +338,14 @@ export default function App() {
 				<span className="count">
 					{loading ? "Loading…" : `${queue.length} video${queue.length === 1 ? "" : "s"}`}
 				</span>
+				{syncInfo && (
+					<span
+						className={`sync-pill${syncInfo.stale ? " stale" : ""}`}
+						title={syncInfo.title}
+					>
+						{syncInfo.text}
+					</span>
+				)}
 				<button className="upload-btn" onClick={() => setShowUpload(true)}>
 					⬆ Upload
 				</button>

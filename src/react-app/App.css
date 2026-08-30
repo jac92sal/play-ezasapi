@@ -151,6 +151,22 @@
 	white-space: nowrap;
 }
 
+.sync-pill {
+	color: var(--text-dim);
+	font-size: 0.8rem;
+	white-space: nowrap;
+	padding: 3px 9px;
+	border: 1px solid currentColor;
+	border-radius: 999px;
+	opacity: 0.75;
+	cursor: default;
+}
+
+.sync-pill.stale {
+	color: #f0a020;
+	opacity: 1;
+}
+
 .notice {
 	padding: 40px 0;
 	text-align: center;
