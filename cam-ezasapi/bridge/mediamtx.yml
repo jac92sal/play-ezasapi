@@ -1,0 +1,79 @@
+###############################################################################
+# Bridge config. This is the ONLY place camera credentials live — they never
+# reach the Worker, KV, or the browser. The app refers to cameras by path name.
+###############################################################################
+
+logLevel: info
+
+# Control API — the Worker calls this to flip recording on and off.
+api: yes
+apiAddress: :9997
+
+# Low-latency HLS is what the browser actually plays (~1-3s behind live).
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsAlwaysRemux: yes          # keep streams hot so tiles start instantly
+hlsSegmentCount: 7
+hlsPartDuration: 200ms
+hlsSegmentDuration: 1s
+hlsAllowOrigin: "*"
+
+# Turn off the protocols nothing here uses.
+rtmp: no
+webrtc: no
+srt: no
+
+# --- Recording -------------------------------------------------------------
+# Off by default; the Record button PATCHes record:true on one path at a time.
+# fmp4 is a straight copy of the camera's H.264 — no re-encode, no quality loss.
+record: no
+recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+recordFormat: fmp4
+recordPartDuration: 1s
+recordSegmentDuration: 15m   # long recordings roll into 15-minute files
+recordDeleteAfter: 0s        # the uploader moves files to R2; nothing lingers
+
+###############################################################################
+# CAMERAS
+#
+# Path names must be [A-Za-z0-9_-] — they become the URL and the R2 folder.
+# Rename them for display in the app itself; don't rename them here once
+# recordings exist.
+#
+# Find your cameras' RTSP URLs with ./discover-rtsp.sh (see README).
+###############################################################################
+
+paths:
+  # ---- V720 cameras (edit IP, user, password, and path per camera) ---------
+  # Most V720-family cams that speak RTSP use one of:
+  #   rtsp://user:pass@IP:554/onvif1
+  #   rtsp://user:pass@IP:554/live/ch00_0
+  #   rtsp://user:pass@IP:554/11
+  # discover-rtsp.sh tells you which one answers.
+
+  cam-1:
+    source: rtsp://admin:CHANGEME@192.168.1.101:554/onvif1
+    sourceOnDemand: no         # keep connected so the tile is instant
+    rtspTransport: tcp
+
+  # cam-2:
+  #   source: rtsp://admin:CHANGEME@192.168.1.102:554/onvif1
+  #   rtspTransport: tcp
+  #   sourceOnDemand: no
+
+  # ---- Monitor webcam -------------------------------------------------------
+  # Publish from the PC the webcam is attached to, e.g.:
+  #   ffmpeg -f dshow -i video="Your Webcam Name" -c:v libx264 -preset veryfast \
+  #     -tune zerolatency -g 30 -f rtsp rtsp://BRIDGE_LAN_IP:8554/desk-cam
+  # (Linux: -f v4l2 -i /dev/video0   macOS: -f avfoundation -i "0")
+  desk-cam:
+    source: publisher
+
+  # ---- Android phone --------------------------------------------------------
+  # Install "IP Webcam" (free, Play Store), start the server, and note the URL
+  # it shows. Then point this at its RTSP endpoint. Keep the phone on wifi.
+  phone:
+    source: rtsp://192.168.1.150:8080/h264_ulaw.sdp
+    rtspTransport: tcp
+    sourceOnDemand: yes        # only connect while someone is watching

@@ -1,0 +1,69 @@
+# The LAN bridge. Runs on any always-on box on the same network as the cameras
+# (Raspberry Pi 4/5, mini PC, NAS, an old laptop — anything that runs Docker).
+#
+#   cp .env.example .env   # fill it in, it is gitignored
+#   docker compose up -d
+#
+# Nothing here needs a port forwarded on your router: cloudflared dials out.
+
+services:
+  # Pulls RTSP from every camera and republishes it as low-latency HLS.
+  mediamtx:
+    image: bluenviron/mediamtx:1.17.1
+    container_name: cam-mediamtx
+    restart: unless-stopped
+    network_mode: host # needed so RTSP/RTP from LAN cameras arrives cleanly
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - recordings:/recordings
+
+  # Single front door for the tunnel: checks the bearer token, then routes
+  # /api/* to the MediaMTX control API and everything else to its HLS server.
+  gate:
+    image: caddy:2.10-alpine
+    container_name: cam-gate
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    environment:
+      - BRIDGE_TOKEN=${BRIDGE_TOKEN:?set BRIDGE_TOKEN in .env}
+
+  # Outbound-only tunnel — publishes the gate at your bridge hostname.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cam-tunnel
+    restart: unless-stopped
+    depends_on: [gate]
+    network_mode: host
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+
+  # Moves finished recordings to R2. --min-age keeps it from grabbing a
+  # segment MediaMTX is still writing.
+  uploader:
+    image: rclone/rclone:1.71
+    container_name: cam-uploader
+    restart: unless-stopped
+    depends_on: [mediamtx]
+    volumes:
+      - recordings:/recordings
+    environment:
+      - RCLONE_CONFIG_R2_TYPE=s3
+      - RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+      - RCLONE_CONFIG_R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID:?set in .env}
+      - RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:?set in .env}
+      - RCLONE_CONFIG_R2_ENDPOINT=${R2_ENDPOINT:?set in .env}
+      - RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
+    entrypoint: /bin/sh
+    command: >
+      -c 'while true; do
+            rclone move /recordings r2:cam-recordings/cam
+              --min-age 1m --include "*.mp4" --delete-empty-src-dirs --stats-one-line;
+            sleep 60;
+          done'
+
+volumes:
+  recordings:
+  caddy-data:

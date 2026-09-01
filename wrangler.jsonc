@@ -3,6 +3,12 @@
 	"name": "play-ezasapi",
 	"account_id": "890f43004f700d06eade9fd5147c8aa5",
 	"main": "./src/worker/index.ts",
+	// Workers Builds runs the deploy command directly, with no build step of its
+	// own, so the assets in dist/client have to be produced here or the upload
+	// fails on a missing assets.directory.
+	"build": {
+		"command": "npm run build"
+	},
 	"compatibility_date": "2026-07-24",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
