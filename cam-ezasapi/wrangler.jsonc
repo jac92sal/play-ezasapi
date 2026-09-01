@@ -1,0 +1,37 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cam-ezasapi",
+	"account_id": "890f43004f700d06eade9fd5147c8aa5",
+	"main": "./src/worker/index.ts",
+	"compatibility_date": "2026-09-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+	"assets": {
+		"not_found_handling": "single-page-application",
+		"binding": "ASSETS",
+		"run_worker_first": ["/api/*"]
+	},
+	// Camera roster + recording session state.
+	// Create with:  wrangler kv namespace create CAMERAS
+	"kv_namespaces": [
+		{
+			"binding": "CAMERAS",
+			"id": "REPLACE_WITH_KV_NAMESPACE_ID"
+		}
+	],
+	// Recordings written by the browser when you press Record.
+	// Create with:  wrangler r2 bucket create cam-recordings
+	"r2_buckets": [
+		{
+			"binding": "RECORDINGS",
+			"bucket_name": "cam-recordings"
+		}
+	],
+	"routes": [
+		{
+			"pattern": "cam.ezasapi.com/*",
+			"zone_id": "f0c332ebb29ca9fec47cb18709894d8a"
+		}
+	]
+}

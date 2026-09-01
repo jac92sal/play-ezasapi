@@ -1,0 +1,18 @@
+# Plain HTTP on the LAN — TLS is terminated by Cloudflare at the tunnel edge.
+:8080 {
+	# Every request must carry the shared token. The Worker adds it; nothing
+	# else can reach the cameras even if the hostname leaks.
+	@unauthorized not header Authorization "Bearer {$BRIDGE_TOKEN}"
+	respond @unauthorized "forbidden" 403
+
+	# MediaMTX control API — used to start/stop recording.
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:9997
+	}
+
+	# Everything else is HLS: /<camera>/index.m3u8 and its segments.
+	handle {
+		reverse_proxy 127.0.0.1:8888
+	}
+}
