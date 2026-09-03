@@ -5,8 +5,26 @@
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2026-07-24",
 	"compatibility_flags": ["nodejs_compat"],
+	// Mirrors the settings live on the deployed Worker so that a deploy from
+	// here never silently resets them. Logs and traces are controlled by the
+	// granular `logs`/`traces` blocks; the top-level `enabled` is the legacy
+	// combined toggle and stays off.
+	// The dashboard also reports `redact_query_string: false`; that is the
+	// default and wrangler 4.88 rejects the field, so it is left out.
 	"observability": {
-		"enabled": true
+		"enabled": false,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": true,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
 	},
 	"upload_source_maps": true,
 	"assets": {
