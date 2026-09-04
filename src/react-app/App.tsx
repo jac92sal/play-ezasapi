@@ -13,6 +13,9 @@ interface VideoEntry {
 
 type SortMode = "newest" | "oldest" | "name" | "size";
 
+/** How often the grid quietly re-checks the bucket for new/removed videos. */
+const REFRESH_INTERVAL_MS = 60_000;
+
 function streamUrl(key: string): string {
 	return `/api/stream/${key.split("/").map(encodeURIComponent).join("/")}`;
 }
@@ -149,16 +152,21 @@ export default function App() {
 	const [error, setError] = useState<string | null>(null);
 	const [query, setQuery] = useState("");
 	const [sort, setSort] = useState<SortMode>("newest");
-	const [nowPlaying, setNowPlaying] = useState<number | null>(null);
+	const [playingKey, setPlayingKey] = useState<string | null>(null);
+	const [refreshing, setRefreshing] = useState(false);
+	const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 	const [autoNext, setAutoNext] = useState(true);
 	const [shuffle, setShuffle] = useState(false);
 	const [showUpload, setShowUpload] = useState(false);
 	const playerRef = useRef<HTMLVideoElement>(null);
 
-	const loadVideos = useCallback(() => {
-		setLoading(true);
-		setError(null);
-		fetch("/api/videos")
+	const inFlight = useRef(false);
+
+	/** Fetch the listing; all state updates happen once the request settles. */
+	const fetchVideos = useCallback(() => {
+		if (inFlight.current) return;
+		inFlight.current = true;
+		fetch("/api/videos", { cache: "no-store" })
 			.then((r) => {
 				if (r.status === 401) {
 					setLocked(true);
@@ -171,15 +179,55 @@ export default function App() {
 				if (data) {
 					setLocked(false);
 					setVideos(data.videos);
+					setLastUpdated(new Date());
+					setError(null);
 				}
 			})
 			.catch((e: Error) => setError(e.message))
-			.finally(() => setLoading(false));
+			.finally(() => {
+				inFlight.current = false;
+				setLoading(false);
+				setRefreshing(false);
+			});
 	}, []);
 
+	/**
+	 * Re-fetch the listing from the bucket. A "silent" refresh keeps the
+	 * current grid on screen (no loading state) so background updates don't
+	 * flicker; the Refresh button and PIN unlock use the normal mode.
+	 */
+	const loadVideos = useCallback(
+		(opts: { silent?: boolean } = {}) => {
+			if (inFlight.current) return;
+			if (!opts.silent) setLoading(true);
+			setRefreshing(true);
+			fetchVideos();
+		},
+		[fetchVideos],
+	);
+
+	// Initial load: `loading` already starts true, so no state needs to be
+	// set here before the request goes out.
 	useEffect(() => {
-		loadVideos();
-	}, [loadVideos]);
+		fetchVideos();
+	}, [fetchVideos]);
+
+	// Keep the list current without a page reload: re-check when the tab
+	// comes back into view and on a timer while it is visible.
+	useEffect(() => {
+		if (locked !== false) return;
+		const refreshIfVisible = () => {
+			if (document.visibilityState === "visible") loadVideos({ silent: true });
+		};
+		document.addEventListener("visibilitychange", refreshIfVisible);
+		window.addEventListener("focus", refreshIfVisible);
+		const timer = window.setInterval(refreshIfVisible, REFRESH_INTERVAL_MS);
+		return () => {
+			document.removeEventListener("visibilitychange", refreshIfVisible);
+			window.removeEventListener("focus", refreshIfVisible);
+			window.clearInterval(timer);
+		};
+	}, [locked, loadVideos]);
 
 	const queue = useMemo(() => {
 		const q = query.trim().toLowerCase();
@@ -204,14 +252,21 @@ export default function App() {
 		return sorted;
 	}, [videos, query, sort]);
 
+	// Track the playing video by key so a list refresh (or a re-sort) while
+	// something is playing doesn't jump to a different video.
+	const nowPlaying = useMemo(() => {
+		if (playingKey === null) return null;
+		const i = queue.findIndex((v) => v.key === playingKey);
+		return i === -1 ? null : i;
+	}, [queue, playingKey]);
 	const current = nowPlaying !== null ? queue[nowPlaying] : null;
 
 	const goTo = useCallback(
 		(index: number) => {
 			if (queue.length === 0) return;
-			setNowPlaying(((index % queue.length) + queue.length) % queue.length);
+			setPlayingKey(queue[((index % queue.length) + queue.length) % queue.length].key);
 		},
-		[queue.length],
+		[queue],
 	);
 
 	const next = useCallback(() => {
@@ -232,7 +287,7 @@ export default function App() {
 		goTo(nowPlaying - 1);
 	}, [nowPlaying, goTo]);
 
-	const close = useCallback(() => setNowPlaying(null), []);
+	const close = useCallback(() => setPlayingKey(null), []);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -246,7 +301,7 @@ export default function App() {
 	}, [nowPlaying, close, next, prev]);
 
 	if (locked === true) {
-		return <PinGate onUnlocked={loadVideos} />;
+		return <PinGate onUnlocked={() => loadVideos()} />;
 	}
 	if (locked === null) {
 		return <div className="pin-gate"><div className="pin-card"><p>Loading…</p></div></div>;
@@ -278,6 +333,18 @@ export default function App() {
 				<span className="count">
 					{loading ? "Loading…" : `${queue.length} video${queue.length === 1 ? "" : "s"}`}
 				</span>
+				<button
+					className={`refresh-btn${refreshing ? " spinning" : ""}`}
+					onClick={() => loadVideos()}
+					disabled={refreshing}
+					title={
+						lastUpdated
+							? `Refresh list (updated ${lastUpdated.toLocaleTimeString()})`
+							: "Refresh list"
+					}
+				>
+					<span className="refresh-icon">↻</span> Refresh
+				</button>
 				<button className="upload-btn" onClick={() => setShowUpload(true)}>
 					⬆ Upload
 				</button>
@@ -297,7 +364,7 @@ export default function App() {
 			{showUpload && (
 				<UploadPanel
 					onClose={() => setShowUpload(false)}
-					onUploaded={loadVideos}
+					onUploaded={() => loadVideos({ silent: true })}
 				/>
 			)}
 
