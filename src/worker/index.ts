@@ -176,6 +176,23 @@ app.on(["GET", "HEAD"], "/api/stream/:key{.+}", async (c) => {
 	return new Response(object.body, { status: 200, headers });
 });
 
+/** Pre-generated JPEG thumbnail for a video, stored at `.thumbnails/<key>.jpg`. */
+app.get("/api/thumb/:key{.+}", async (c) => {
+	const key = decodeURIComponent(c.req.param("key"));
+	const object = await c.env.ENTERTAINMENTVIDEOS.get(`.thumbnails/${key}.jpg`);
+	if (!object) return c.notFound();
+
+	return new Response(object.body, {
+		status: 200,
+		headers: {
+			"Content-Type": "image/jpeg",
+			"Content-Length": String(object.size),
+			ETag: object.httpEtag,
+			"Cache-Control": "public, max-age=86400, s-maxage=604800",
+		},
+	});
+});
+
 /* ---------------- uploads ---------------- */
 
 const FP_PREFIX = "fp:";
