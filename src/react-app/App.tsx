@@ -13,8 +13,16 @@ interface VideoEntry {
 
 type SortMode = "newest" | "oldest" | "name" | "size";
 
+function encodeKey(key: string): string {
+	return key.split("/").map(encodeURIComponent).join("/");
+}
+
 function streamUrl(key: string): string {
-	return `/api/stream/${key.split("/").map(encodeURIComponent).join("/")}`;
+	return `/api/stream/${encodeKey(key)}`;
+}
+
+function thumbUrl(key: string): string {
+	return `/api/thumb/${encodeKey(key)}`;
 }
 
 function formatSize(bytes: number): string {
@@ -36,7 +44,11 @@ function prettyName(name: string): string {
 	return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
 }
 
-/** Grid card — loads its preview (first frame) only once scrolled into view. */
+/**
+ * Grid card — loads its preview only once scrolled into view. Uses the
+ * pre-generated JPEG thumbnail; falls back to a first-frame <video> if the
+ * thumbnail is missing.
+ */
 function VideoCard({
 	video,
 	onPlay,
@@ -46,6 +58,7 @@ function VideoCard({
 }) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
+	const [thumbFailed, setThumbFailed] = useState(false);
 
 	useEffect(() => {
 		const el = ref.current;
@@ -66,7 +79,9 @@ function VideoCard({
 	return (
 		<div className="card" ref={ref} onClick={onPlay} title={video.name}>
 			<div className="thumb">
-				{visible ? (
+				{!visible ? (
+					<div className="thumb-placeholder" />
+				) : thumbFailed ? (
 					<video
 						src={`${streamUrl(video.key)}#t=0.5`}
 						preload="metadata"
@@ -74,7 +89,13 @@ function VideoCard({
 						playsInline
 					/>
 				) : (
-					<div className="thumb-placeholder" />
+					<img
+						src={thumbUrl(video.key)}
+						alt=""
+						loading="lazy"
+						decoding="async"
+						onError={() => setThumbFailed(true)}
+					/>
 				)}
 				<span className="play-badge">▶</span>
 			</div>
