@@ -15,13 +15,20 @@
 # ===== CONFIG =====
 $VideoFolder  = "C:\Users\jacob\OneDrive\Videos"
 $SiteBase     = "https://play.ezasapi.com"
-$Pin          = "4040"
+# PIN is never stored here. Set it once per shell:  $env:PLAY_PIN = "...."
+# or leave it unset and the script prompts for it.
+$Pin          = $env:PLAY_PIN
 $RcloneRemote = "r2"
 $Bucket       = "entertainmentvideos"
 $Extensions   = @(".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi", ".ogv")
 # ==================
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Pin)) {
+    $secure = Read-Host -Prompt "play.ezasapi PIN" -AsSecureString
+    $Pin = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+}
 $FpChunk = 4MB
 
 function Get-Fingerprint([string]$Path) {

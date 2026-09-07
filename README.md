@@ -23,7 +23,7 @@ Private video library. One R2 bucket, one Cloudflare Worker, and three clients
 | Web app | `src/react-app/`, `index.html`, `public/` | React grid + player, served by the same Worker as static assets. `public/` holds the site icon set. |
 | Roku channel | `roku/` | SceneGraph channel: PIN screen, poster grid, player. Points at `https://play.ezasapi.com`. |
 | Roku package | `npm run roku:package` → `dist/play-ezasapi-roku.zip` | The zip you sideload onto the Roku (see `roku/README.md`). |
-| PC sync | `docs/sync-videos.ps1` | Uploads new videos from the PC to the bucket through the Worker's upload API. |
+| PC sync | `docs/sync-videos.ps1` | Uploads new videos from the PC to the bucket through the Worker's upload API. Reads the PIN from `$env:PLAY_PIN` or prompts for it; the PIN is never stored in the repo. |
 | Storage | R2 `entertainmentvideos`, KV `HASHES` | Videos + thumbnails; content-fingerprint index used for duplicate checks. |
 
 ## Auth
