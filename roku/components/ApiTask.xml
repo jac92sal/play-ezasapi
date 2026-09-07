@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Background HTTP task. Network calls are not allowed on the render thread,
+  so MainScene runs one of these per request.
+
+  mode = "auth"   : POST {baseUrl}/api/auth with {pin}   -> result.token
+  mode = "videos" : GET  {baseUrl}/api/videos (Bearer)   -> result.videos[]
+-->
+<component name="ApiTask" extends="Task">
+  <interface>
+    <field id="mode" type="string" />
+    <field id="baseUrl" type="string" />
+    <field id="pin" type="string" />
+    <field id="token" type="string" />
+    <field id="status" type="integer" alwaysNotify="true" />
+    <field id="result" type="assocarray" />
+  </interface>
+  <script type="text/brightscript" uri="ApiTask.brs" />
+</component>

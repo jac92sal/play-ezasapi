@@ -42,21 +42,28 @@ app.post("/api/auth", async (c) => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		return c.json({ ok: false }, 401);
 	}
-	setCookie(c, AUTH_COOKIE, await authToken(c.env.PLAY_PIN), {
+	const token = await authToken(c.env.PLAY_PIN);
+	setCookie(c, AUTH_COOKIE, token, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "Lax",
 		path: "/",
 		maxAge: 60 * 60 * 24 * 30,
 	});
-	return c.json({ ok: true });
+	// The token is also returned for non-browser clients (the Roku channel).
+	return c.json({ ok: true, token });
 });
 
-/** Everything else under /api requires the auth cookie. */
+/**
+ * Everything else under /api requires the auth token. Browsers send it as the
+ * HttpOnly cookie; the Roku channel (whose Poster/Video nodes cannot set
+ * headers) sends it as `Authorization: Bearer <token>` or `?auth=<token>`.
+ */
 app.use("/api/*", async (c, next) => {
 	if (c.req.path === "/api/auth") return next();
-	const cookie = getCookie(c, AUTH_COOKIE);
-	if (!cookie || !timingSafeEqual(cookie, await authToken(c.env.PLAY_PIN))) {
+	const bearer = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+	const presented = getCookie(c, AUTH_COOKIE) ?? bearer ?? c.req.query("auth");
+	if (!presented || !timingSafeEqual(presented, await authToken(c.env.PLAY_PIN))) {
 		return c.json({ error: "unauthorized" }, 401);
 	}
 	return next();
@@ -122,6 +129,23 @@ app.get("/api/videos", async (c) => {
 		200,
 		{ "Cache-Control": "no-cache" },
 	);
+});
+
+const THUMB_PREFIX = ".thumbnails/";
+
+/** Pre-generated first-frame JPEG for a video (stored at .thumbnails/<key>.jpg). */
+app.get("/api/thumb/:key{.+}", async (c) => {
+	const key = decodeURIComponent(c.req.param("key"));
+	const object = await c.env.ENTERTAINMENTVIDEOS.get(`${THUMB_PREFIX}${key}.jpg`);
+	if (!object) return c.notFound();
+	return new Response(object.body, {
+		headers: {
+			"Content-Type": "image/jpeg",
+			"Content-Length": String(object.size),
+			ETag: object.httpEtag,
+			"Cache-Control": "public, max-age=86400",
+		},
+	});
 });
 
 /** Stream a video with full HTTP Range support so seeking works. */
