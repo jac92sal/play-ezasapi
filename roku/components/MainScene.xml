@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Single-scene channel:
+    PIN dialog  -> POST /api/auth  (token saved in the Roku registry)
+    PosterGrid  -> GET  /api/videos, posters from /api/thumb/<key>
+    Video       -> /api/stream/<key> with byte-range seeking, autoplay next
+-->
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="MainScene.brs" />
+  <children>
+    <Label id="title" text="play.ezasapi" translation="[60,36]" font="font:MediumBoldSystemFont" color="#e8ecf3" />
+    <Label id="status" text="" translation="[60,84]" width="1160" font="font:SmallSystemFont" color="#9aa3b2" />
+    <PosterGrid id="grid" translation="[60,124]"
+      basePosterSize="[216,122]" itemSpacing="[20,36]"
+      numColumns="5" numRows="3"
+      caption1NumLines="1" caption2NumLines="1"
+      showCaptionsOnFocusOnly="false" visible="false" />
+    <Video id="player" width="1280" height="720" translation="[0,0]" visible="false" enableUI="true" />
+  </children>
+</component>

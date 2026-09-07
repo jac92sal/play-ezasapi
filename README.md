@@ -1,90 +1,56 @@
-# React + Vite + Hono + Cloudflare Workers
+# play.ezasapi
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/vite-react-template)
+Private video library. One R2 bucket, one Cloudflare Worker, and three clients
+(web app, Roku channel, PC sync script) that all talk to that Worker.
 
-This template provides a minimal setup for building a React application with TypeScript and Vite, designed to run on Cloudflare Workers. It features hot module replacement, ESLint integration, and the flexibility of Workers deployments.
-
-![React + TypeScript + Vite + Cloudflare Workers](https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/fc7b4b62-442b-4769-641b-ad4422d74300/public)
-
-<!-- dash-content-start -->
-
-🚀 Supercharge your web development with this powerful stack:
-
-- [**React**](https://react.dev/) - A modern UI library for building interactive interfaces
-- [**Vite**](https://vite.dev/) - Lightning-fast build tooling and development server
-- [**Hono**](https://hono.dev/) - Ultralight, modern backend framework
-- [**Cloudflare Workers**](https://developers.cloudflare.com/workers/) - Edge computing platform for global deployment
-
-### ✨ Key Features
-
-- 🔥 Hot Module Replacement (HMR) for rapid development
-- 📦 TypeScript support out of the box
-- 🛠️ ESLint configuration included
-- ⚡ Zero-config deployment to Cloudflare's global network
-- 🎯 API routes with Hono's elegant routing
-- 🔄 Full-stack development setup
-- 🔎 Built-in Observability to monitor your Worker
-
-Get started in minutes with local development or deploy directly via the Cloudflare dashboard. Perfect for building modern, performant web applications at the edge.
-
-<!-- dash-content-end -->
-
-## Getting Started
-
-To start a new project with this template, run:
-
-```bash
-npm create cloudflare@latest -- --template=cloudflare/templates/vite-react-template
+```
+                          ┌──────────────────────────────────────────┐
+  Browser  ──────────────▶│  play-ezasapi Worker                     │
+  (src/react-app)         │  https://play.ezasapi.com                │
+                          │  src/worker/index.ts                     │──▶ R2 bucket: entertainmentvideos
+  Roku channel ──────────▶│                                          │      videos/*.mp4, *.m4v
+  (roku/)                 │  /api/auth     PIN → token (cookie+JSON) │      .thumbnails/<key>.jpg
+                          │  /api/videos   list                      │
+  sync-videos.ps1 ───────▶│  /api/thumb/…  first-frame JPEG          │──▶ KV: HASHES
+  (docs/, runs on the PC) │  /api/stream/… video bytes, Range ok     │      fingerprint → key (dedupe)
+                          │  /api/upload/… direct + multipart        │
+                          └──────────────────────────────────────────┘
 ```
 
-A live deployment of this template is available at:
-[https://react-vite-template.templates.workers.dev](https://react-vite-template.templates.workers.dev)
+| Piece | Where | What it is |
+|---|---|---|
+| Worker (backend) | `src/worker/index.ts`, `wrangler.jsonc` | The only thing that touches the bucket. Deployed as `play-ezasapi` on `play.ezasapi.com`. |
+| Web app | `src/react-app/`, `index.html`, `public/` | React grid + player, served by the same Worker as static assets. `public/` holds the site icon set. |
+| Roku channel | `roku/` | SceneGraph channel: PIN screen, poster grid, player. Points at `https://play.ezasapi.com`. |
+| Roku package | `npm run roku:package` → `dist/play-ezasapi-roku.zip` | The zip you sideload onto the Roku (see `roku/README.md`). |
+| PC sync | `docs/sync-videos.ps1` | Uploads new videos from the PC to the bucket through the Worker's upload API. |
+| Storage | R2 `entertainmentvideos`, KV `HASHES` | Videos + thumbnails; content-fingerprint index used for duplicate checks. |
 
-## Development
+## Auth
 
-Install dependencies:
+Everything under `/api/*` except `/api/auth` needs the token derived from the
+`PLAY_PIN` Worker secret. The token can be presented three ways, so every
+client can use it:
 
-```bash
-npm install
-```
+- `play_auth` cookie: set by `/api/auth`, used by the web app
+- `Authorization: Bearer <token>`: used by the Roku channel for JSON calls
+- `?auth=<token>` query parameter: used by the Roku channel for posters and
+  video playback, because Roku's Poster/Video nodes cannot send headers
 
-Start the development server with:
+`/api/auth` returns the token in its JSON body as well as in the cookie.
 
-```bash
-npm run dev
-```
+## Commands
 
-Your application will be available at [http://localhost:5173](http://localhost:5173).
+| Command | Does |
+|---|---|
+| `npm run dev` | Local dev server (Workers runtime) |
+| `npm run check` | Type-check, build the web app, dry-run deploy |
+| `npm run deploy` | Build and deploy the Worker + web app to play.ezasapi.com |
+| `npm run roku:package` | Zip `roku/` into `dist/play-ezasapi-roku.zip` for sideloading |
+| `npm run cf-typegen` | Regenerate `worker-configuration.d.ts` after changing `wrangler.jsonc` |
 
-## Production
+## Video count
 
-Build your project for production:
-
-```bash
-npm run build
-```
-
-Preview your build locally:
-
-```bash
-npm run preview
-```
-
-Deploy your project to Cloudflare Workers:
-
-```bash
-npm run build && npm run deploy
-```
-
-Monitor your workers:
-
-```bash
-npx wrangler tail
-```
-
-## Additional Resources
-
-- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
-- [Vite Documentation](https://vitejs.dev/guide/)
-- [React Documentation](https://reactjs.org/)
-- [Hono Documentation](https://hono.dev/)
+The app counts only playable videos (`.mp4`, `.m4v`, `.webm`, `.mov`, `.mkv`,
+`.avi`, `.ogv`). The bucket's object count is higher because it also holds one
+`.thumbnails/<key>.jpg` per video, the sync reports, and folder placeholders.
