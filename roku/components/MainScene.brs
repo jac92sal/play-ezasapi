@@ -71,8 +71,14 @@ sub onAuthDone()
         loadVideos()
     else if m.authTask.status = 401 then
         askForPin("Wrong PIN, try again")
+    else if m.authTask.status = 200 then
+        ' Login worked but no token came back: the site is still running the
+        ' old worker that only sets a cookie. Deploy the latest worker.
+        askForPin("play.ezasapi.com needs the latest worker deployed, then try again")
+    else if m.authTask.status <= 0 then
+        askForPin("Couldn't reach play.ezasapi.com. Check the Roku's internet connection")
     else
-        askForPin("Couldn't reach play.ezasapi.com (HTTP " + m.authTask.status.toStr() + ")")
+        askForPin("play.ezasapi.com returned HTTP " + m.authTask.status.toStr())
     end if
 end sub
 
