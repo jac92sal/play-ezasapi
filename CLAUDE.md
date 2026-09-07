@@ -35,7 +35,7 @@ pointed at `https://play.ezasapi.com` (`m.baseUrl` in `components/MainScene.brs`
 `ApiTask` does the HTTP; posters and playback pass the token as `?auth=`.
 Icons/splash in `roku/images/` come from the bucket thumbnail `8Pi9kJ1W6A9TjJgB.mp4`.
 Validate with `bsc --rootDir roku --createPackage false` (brighterscript).
-`README.md` at the repo root maps how the Worker, web app, Roku channel and sync script fit together.
+`README.md` at the repo root maps how the Worker, web app and Roku channel fit together.
 
 ## Commands
 
