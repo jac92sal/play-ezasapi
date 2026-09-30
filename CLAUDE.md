@@ -15,9 +15,9 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 ## API (worker: `src/worker/index.ts`)
 
 - `POST /api/auth` — body `{pin}`; sets 30-day HttpOnly auth cookie on success (500ms delay on failure)
-- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag
+- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag/hasThumb (`hasThumb` = a `.thumbnails/<key>.jpg` exists)
 - `GET|HEAD /api/stream/:key` — streams an object from R2 with HTTP Range support (seeking works); 1h edge cache headers
-- `GET /api/thumb/:key` — returns the pre-generated JPEG at `.thumbnails/<key>.jpg` (`image/jpeg`, 1d browser / 7d edge cache); 404 if missing. Grid cards use this and fall back to a first-frame `<video preload="metadata">` on error
+- `GET /api/thumb/:key` — returns the pre-generated JPEG at `.thumbnails/<key>.jpg` (`image/jpeg`, 1d browser / 7d edge cache). If none exists it serves `public/thumb-placeholder.png` (200, `X-Thumb-Placeholder: 1`, 5min cache) so image-only clients such as the Roku PosterGrid still get a tile. Web grid cards skip the request when `hasThumb` is false and show the video name on the tile instead
 - `POST /api/upload/check` — `{name, fingerprint}` → `{nameExists, contentDuplicateOf}`
 - `PUT /api/upload/direct/:key?fingerprint=` — single-request upload (≤48MB)
 - `POST /api/upload/init` / `PUT /api/upload/part` / `POST /api/upload/complete` / `POST /api/upload/abort` — R2 multipart for large files (48MB parts, client uploads 3 in parallel)

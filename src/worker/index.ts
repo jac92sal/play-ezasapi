@@ -89,12 +89,22 @@ export interface VideoEntry {
 	uploaded: string;
 	contentType: string;
 	etag: string;
+	/** Whether a pre-generated JPEG exists at `.thumbnails/<key>.jpg`. */
+	hasThumb: boolean;
+}
+
+const THUMB_PREFIX = ".thumbnails/";
+const THUMB_SUFFIX = ".jpg";
+
+function thumbKeyFor(videoKey: string): string {
+	return `${THUMB_PREFIX}${videoKey}${THUMB_SUFFIX}`;
 }
 
 /** List every video object in the bucket (paginates through the full listing). */
 app.get("/api/videos", async (c) => {
 	const bucket = c.env.ENTERTAINMENTVIDEOS;
 	const videos: VideoEntry[] = [];
+	const thumbKeys = new Set<string>();
 	let cursor: string | undefined;
 
 	do {
@@ -104,6 +114,12 @@ app.get("/api/videos", async (c) => {
 			include: ["httpMetadata"],
 		});
 		for (const obj of page.objects) {
+			if (obj.key.startsWith(THUMB_PREFIX)) {
+				if (obj.key.endsWith(THUMB_SUFFIX)) {
+					thumbKeys.add(obj.key.slice(THUMB_PREFIX.length, -THUMB_SUFFIX.length));
+				}
+				continue;
+			}
 			if (!(extensionOf(obj.key) in VIDEO_EXTENSIONS)) continue;
 			videos.push({
 				key: obj.key,
@@ -112,10 +128,13 @@ app.get("/api/videos", async (c) => {
 				uploaded: obj.uploaded.toISOString(),
 				contentType: contentTypeFor(obj.key, obj.httpMetadata?.contentType),
 				etag: obj.httpEtag,
+				hasThumb: false,
 			});
 		}
 		cursor = page.truncated ? page.cursor : undefined;
 	} while (cursor);
+
+	for (const video of videos) video.hasThumb = thumbKeys.has(video.key);
 
 	return c.json(
 		{ videos, count: videos.length },
@@ -176,11 +195,31 @@ app.on(["GET", "HEAD"], "/api/stream/:key{.+}", async (c) => {
 	return new Response(object.body, { status: 200, headers });
 });
 
-/** Pre-generated JPEG thumbnail for a video, stored at `.thumbnails/<key>.jpg`. */
+/**
+ * Pre-generated JPEG thumbnail for a video, stored at `.thumbnails/<key>.jpg`.
+ *
+ * When no thumbnail exists the generic placeholder poster is served instead of
+ * a 404, so image-only clients (the Roku PosterGrid) still get a tile. That
+ * response is marked with `X-Thumb-Placeholder: 1` and cached only briefly so
+ * a later-generated thumbnail shows up quickly.
+ */
 app.get("/api/thumb/:key{.+}", async (c) => {
 	const key = decodeURIComponent(c.req.param("key"));
-	const object = await c.env.ENTERTAINMENTVIDEOS.get(`.thumbnails/${key}.jpg`);
-	if (!object) return c.notFound();
+	const object = await c.env.ENTERTAINMENTVIDEOS.get(thumbKeyFor(key));
+	if (!object) {
+		const placeholder = await c.env.ASSETS.fetch(
+			new URL("/thumb-placeholder.png", c.req.url),
+		);
+		if (!placeholder.ok) return c.notFound();
+		return new Response(placeholder.body, {
+			status: 200,
+			headers: {
+				"Content-Type": "image/png",
+				"Cache-Control": "public, max-age=300",
+				"X-Thumb-Placeholder": "1",
+			},
+		});
+	}
 
 	return new Response(object.body, {
 		status: 200,

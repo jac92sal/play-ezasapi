@@ -9,6 +9,8 @@ interface VideoEntry {
 	uploaded: string;
 	contentType: string;
 	etag: string;
+	/** False when the bucket has no `.thumbnails/<key>.jpg` for this video. */
+	hasThumb?: boolean;
 }
 
 type SortMode = "newest" | "oldest" | "name" | "size";
@@ -46,8 +48,9 @@ function prettyName(name: string): string {
 
 /**
  * Grid card — loads its preview only once scrolled into view. Uses the
- * pre-generated JPEG thumbnail; falls back to a first-frame <video> if the
- * thumbnail is missing.
+ * pre-generated JPEG thumbnail; when the bucket has none (or the image fails
+ * to load) it shows the video's name on the tile instead, so every card is
+ * identifiable even without artwork.
  */
 function VideoCard({
 	video,
@@ -59,6 +62,7 @@ function VideoCard({
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
 	const [thumbFailed, setThumbFailed] = useState(false);
+	const showTitleTile = video.hasThumb === false || thumbFailed;
 
 	useEffect(() => {
 		const el = ref.current;
@@ -79,15 +83,12 @@ function VideoCard({
 	return (
 		<div className="card" ref={ref} onClick={onPlay} title={video.name}>
 			<div className="thumb">
-				{!visible ? (
+				{showTitleTile ? (
+					<div className="thumb-title">
+						<span>{prettyName(video.name)}</span>
+					</div>
+				) : !visible ? (
 					<div className="thumb-placeholder" />
-				) : thumbFailed ? (
-					<video
-						src={`${streamUrl(video.key)}#t=0.5`}
-						preload="metadata"
-						muted
-						playsInline
-					/>
 				) : (
 					<img
 						src={thumbUrl(video.key)}
