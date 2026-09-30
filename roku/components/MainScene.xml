@@ -14,7 +14,9 @@
       basePosterSize="[216,122]" itemSpacing="[20,36]"
       numColumns="5" numRows="3"
       caption1NumLines="1" caption2NumLines="1"
-      showCaptionsOnFocusOnly="false" visible="false" />
+      loadingBitmapUri="pkg:/images/poster-missing.png"
+      failedBitmapUri="pkg:/images/poster-missing.png"
+      visible="false" />
     <Video id="player" width="1280" height="720" translation="[0,0]" visible="false" enableUI="true" />
   </children>
 </component>

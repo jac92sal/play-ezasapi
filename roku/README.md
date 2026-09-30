@@ -13,6 +13,7 @@ own: if the Worker is up, the channel works.
 | `components/MainScene.xml` / `.brs` | PIN dialog, poster grid, video player, autoplay-next |
 | `components/ApiTask.xml` / `.brs` | Background HTTP: `POST /api/auth`, `GET /api/videos` |
 | `images/` | Icon (336x210, 248x140) and splash (1280x720, 1920x1080, 720x480), generated from the bucket thumbnail `8Pi9kJ1W6A9TjJgB.mp4` |
+| `images/poster-missing.png` | Grid poster shown while a thumbnail loads or if it fails to load |
 
 ## How it talks to the Worker
 
