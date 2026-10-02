@@ -9,6 +9,12 @@ sub init()
     m.grid = m.top.findNode("grid")
     m.player = m.top.findNode("player")
     m.status = m.top.findNode("status")
+    m.nowPlaying = m.top.findNode("nowPlaying")
+    m.npTitle = m.top.findNode("npTitle")
+    m.npTimer = m.top.findNode("npTimer")
+    m.npTimer.observeField("fire", "hideNowPlaying")
+    m.errorStreak = 0
+    m.skipped = 0
     m.videos = []
     m.currentIndex = -1
     m.submitting = false
@@ -148,34 +154,91 @@ sub playIndex(index as integer)
     m.player.visible = true
     m.player.setFocus(true)
     m.player.control = "play"
+
+    ' Keep the grid on the video being watched, so Back lands on it.
+    m.grid.jumpToItem = index
+    showNowPlaying("")
+end sub
+
+' Next / previous, used by autoplay and by Down / Up on the remote.
+sub playNext(manual as boolean)
+    if m.currentIndex + 1 < m.videos.count() then
+        playIndex(m.currentIndex + 1)
+    else if manual then
+        showNowPlaying("  (last video)")
+    else
+        stopPlayer()
+    end if
+end sub
+
+sub playPrevious()
+    if m.currentIndex > 0 then
+        playIndex(m.currentIndex - 1)
+    else
+        showNowPlaying("  (first video)")
+    end if
 end sub
 
 sub onPlayerState()
     state = m.player.state
-    if state = "finished" then
+    if state = "playing" then
+        m.errorStreak = 0
+    else if state = "finished" then
         ' Autoplay next, like the web player.
-        if m.currentIndex + 1 < m.videos.count() then
+        playNext(false)
+    else if state = "error" then
+        ' Some uploads in the bucket are incomplete and cannot play. Skip them
+        ' instead of dropping back to the grid, but give up after a long run
+        ' of failures (e.g. the network is down) rather than looping forever.
+        m.errorStreak = m.errorStreak + 1
+        m.skipped = m.skipped + 1
+        if m.errorStreak < 10 and m.currentIndex + 1 < m.videos.count() then
+            m.status.text = "Skipped " + m.skipped.toStr() + " video(s) that could not play"
             playIndex(m.currentIndex + 1)
         else
+            m.status.text = "Playback error: " + m.player.errorMsg
             stopPlayer()
         end if
-    else if state = "error" then
-        m.status.text = "Playback error: " + m.player.errorMsg
-        stopPlayer()
     end if
+end sub
+
+sub showNowPlaying(suffix as string)
+    if m.currentIndex < 0 or m.currentIndex >= m.videos.count() then return
+    v = m.videos[m.currentIndex]
+    position = (m.currentIndex + 1).toStr() + " of " + m.videos.count().toStr()
+    m.npTitle.text = prettyName(v.name) + "   ·   " + position + suffix
+    m.nowPlaying.visible = true
+    m.npTimer.control = "stop"
+    m.npTimer.control = "start"
+end sub
+
+sub hideNowPlaying()
+    m.nowPlaying.visible = false
 end sub
 
 sub stopPlayer()
     m.player.control = "stop"
     m.player.visible = false
+    hideNowPlaying()
     m.grid.setFocus(true)
 end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
     if m.player.visible then
+        ' The Video node keeps Left/Right/OK/Play/Rewind/FastForward for
+        ' seeking and pausing; Up/Down/* reach us here.
         if key = "back" then
             stopPlayer()
+            return true
+        else if key = "down" then
+            playNext(true)
+            return true
+        else if key = "up" then
+            playPrevious()
+            return true
+        else if key = "options" then
+            showNowPlaying("")
             return true
         end if
     else if key = "options" and not m.grid.visible then

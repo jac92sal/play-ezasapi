@@ -4,7 +4,7 @@ title=play.ezasapi
 subtitle=Your video library
 major_version=1
 minor_version=0
-build_version=3
+build_version=4
 
 mm_icon_focus_hd=pkg:/images/icon_hd.png
 mm_icon_focus_sd=pkg:/images/icon_sd.png
