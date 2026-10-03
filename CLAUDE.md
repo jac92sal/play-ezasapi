@@ -48,4 +48,5 @@ Validate with `bsc --rootDir roku --createPackage false` (brighterscript).
 - `npm run check` — tsc + build + `wrangler deploy --dry-run`
 - `npm run deploy` — build + deploy to play.ezasapi.com
 - `npm run roku:package` — zip `roku/` into `dist/play-ezasapi-roku.zip` for sideloading
+- `docs/sync-videos.ps1` (PowerShell, on the PC) — one-way sync of `C:\Videos\play.ezasapi.source` into the bucket via rclone, skipping content the site already has; PIN comes from `$env:PLAY_PIN` or a prompt, never the file
 - `npm run cf-typegen` — regenerate `worker-configuration.d.ts` after wrangler.jsonc changes
