@@ -510,7 +510,8 @@ export default function App() {
 
 	/** Contiguous slices of the queue per group (the queue is group-sorted when grouped). */
 	const sections = useMemo(() => {
-		if (!grouped) return null;
+		// The duplicates view is sorted by size so each pair sits together; grouping would split them.
+		if (!grouped || dupOnly) return null;
 		const out: { group: string; start: number; items: VideoEntry[] }[] = [];
 		queue.forEach((v, i) => {
 			const g = groupOf(v);
@@ -519,7 +520,7 @@ export default function App() {
 			else out.push({ group: g, start: i, items: [v] });
 		});
 		return out;
-	}, [queue, grouped]);
+	}, [queue, grouped, dupOnly]);
 
 	const applyMeta = useCallback((key: string, title: string | null, group: string | null) => {
 		setVideos((list) =>
