@@ -10,13 +10,16 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
   - R2: `entertainmentvideos` → binding `ENTERTAINMENTVIDEOS`
   - KV: `HASHES` (id `fdaf6f7ff5c24be09b8332785754fde6`) — content-fingerprint index `fp:<sha256>` → `{key,size}`; fingerprint = SHA-256(first 4MB + last 4MB + size)
   - Assets: `dist/client` → binding `ASSETS`, SPA fallback, `run_worker_first: ["/api/*"]`
-- **Secrets:** `PLAY_PIN` (Worker secret) — the access PIN; all `/api/*` except `/api/auth` require the HMAC cookie it derives
+- **Secrets:** `PLAY_PIN` (Worker secret) — the access PIN; all `/api/*` except `/api/auth` require the HMAC token it derives, presented as the `play_auth` cookie (web), `Authorization: Bearer` header, or `?auth=` query param (Roku posters/video)
 
 ## API (worker: `src/worker/index.ts`)
 
-- `POST /api/auth` — body `{pin}`; sets 30-day HttpOnly auth cookie on success (500ms delay on failure)
-- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag
+- `POST /api/auth` — body `{pin}`; sets 30-day HttpOnly auth cookie and returns `{ok, token}` on success (500ms delay on failure)
+- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag/hasThumb (`hasThumb` = a `.thumbnails/<key>.jpg` exists)
 - `GET|HEAD /api/stream/:key` — streams an object from R2 with HTTP Range support (seeking works); 1h edge cache headers
+- `GET /api/thumb/:key` — returns the pre-generated JPEG at `.thumbnails/<key>.jpg` (`image/jpeg`, 1d browser / 7d edge cache). If none exists it serves `public/thumb-placeholder.png` (200, `X-Thumb-Placeholder: 1`, 5min cache) so image-only clients such as the Roku PosterGrid still get a tile. Web grid cards skip the request when `hasThumb` is false and show the video name on the tile instead
+- `POST /api/videos/meta` — `{key, title?, group?}` sets the display title / studio group shown in the web app (stored together in the KV value `library-meta`; empty clears; the object is never renamed). `/api/videos` returns `title` / `group` when set
+- `DELETE /api/videos/:key` — deletes the object, its `.thumbnails/<key>.jpg`, and the `fp:` KV entry when it points at that key (fingerprint recomputed from the object)
 - `POST /api/upload/check` — `{name, fingerprint}` → `{nameExists, contentDuplicateOf}`
 - `PUT /api/upload/direct/:key?fingerprint=` — single-request upload (≤48MB)
 - `POST /api/upload/init` / `PUT /api/upload/part` / `POST /api/upload/complete` / `POST /api/upload/abort` — R2 multipart for large files (48MB parts, client uploads 3 in parallel)
@@ -24,12 +27,26 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 ## Frontend (`src/react-app/`)
 
 Grid of lazy-loaded first-frame previews → click to open player overlay with
-search, sort (newest/oldest/name/size), autoplay-next, shuffle, and an Up Next
-queue. Keyboard: Esc close, Shift+←/→ prev/next.
+search, sort (newest/oldest/name/size), autoplay-next, shuffle, an Up Next
+queue, "Group by studio" sections (studio guessed from the name prefix, e.g.
+`BSB 00072`, `BiLatinMen - …`, `Chaos Men - …`, with a manual override), per-video
+Title / Group editing (✎), a "Possible duplicates" filter (videos sharing an exact byte size, listed
+side by side), and delete (card hover button or player button, with confirm). Keyboard: Esc close, Shift+←/→ prev/next.
+
+## Roku channel (`roku/`)
+
+SceneGraph channel (BrightScript) with the same PIN → grid → player flow,
+pointed at `https://play.ezasapi.com` (`m.baseUrl` in `components/MainScene.brs`).
+`ApiTask` does the HTTP; posters and playback pass the token as `?auth=`.
+Icons/splash in `roku/images/` come from the bucket thumbnail `8Pi9kJ1W6A9TjJgB.mp4`.
+Validate with `bsc --rootDir roku --createPackage false` (brighterscript).
+`README.md` at the repo root maps how the Worker, web app and Roku channel fit together.
 
 ## Commands
 
 - `npm run dev` — local dev (real Workers runtime via Vite plugin)
 - `npm run check` — tsc + build + `wrangler deploy --dry-run`
 - `npm run deploy` — build + deploy to play.ezasapi.com
+- `npm run roku:package` — zip `roku/` into `dist/play-ezasapi-roku.zip` for sideloading
+- `docs/sync-videos.ps1` (PowerShell, on the PC) — one-way sync of `C:\Videos\play.ezasapi.source` into the bucket via rclone, skipping content the site already has; PIN comes from `$env:PLAY_PIN` or a prompt, never the file
 - `npm run cf-typegen` — regenerate `worker-configuration.d.ts` after wrangler.jsonc changes
