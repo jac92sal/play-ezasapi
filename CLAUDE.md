@@ -15,9 +15,9 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 ## API (worker: `src/worker/index.ts`)
 
 - `POST /api/auth` — body `{pin}`; sets 30-day HttpOnly auth cookie and returns `{ok, token}` on success (500ms delay on failure)
-- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag
-- `GET /api/thumb/:key` — first-frame JPEG from `.thumbnails/<key>.jpg` (1 day cache)
+- `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag/hasThumb (`hasThumb` = a `.thumbnails/<key>.jpg` exists)
 - `GET|HEAD /api/stream/:key` — streams an object from R2 with HTTP Range support (seeking works); 1h edge cache headers
+- `GET /api/thumb/:key` — returns the pre-generated JPEG at `.thumbnails/<key>.jpg` (`image/jpeg`, 1d browser / 7d edge cache). If none exists it serves `public/thumb-placeholder.png` (200, `X-Thumb-Placeholder: 1`, 5min cache) so image-only clients such as the Roku PosterGrid still get a tile. Web grid cards skip the request when `hasThumb` is false and show the video name on the tile instead
 - `POST /api/videos/meta` — `{key, title?, group?}` sets the display title / studio group shown in the web app (stored together in the KV value `library-meta`; empty clears; the object is never renamed). `/api/videos` returns `title` / `group` when set
 - `DELETE /api/videos/:key` — deletes the object, its `.thumbnails/<key>.jpg`, and the `fp:` KV entry when it points at that key (fingerprint recomputed from the object)
 - `POST /api/upload/check` — `{name, fingerprint}` → `{nameExists, contentDuplicateOf}`

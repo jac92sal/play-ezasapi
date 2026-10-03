@@ -13,6 +13,7 @@ own: if the Worker is up, the channel works.
 | `components/MainScene.xml` / `.brs` | PIN dialog, poster grid, video player, autoplay-next |
 | `components/ApiTask.xml` / `.brs` | Background HTTP: `POST /api/auth`, `GET /api/videos` |
 | `images/` | Icon (336x210, 248x140) and splash (1280x720, 1920x1080, 720x480), generated from the bucket thumbnail `8Pi9kJ1W6A9TjJgB.mp4` |
+| `images/poster-missing.png` | Grid poster shown while a thumbnail loads or if it fails to load |
 
 ## How it talks to the Worker
 
@@ -25,6 +26,10 @@ own: if the Worker is up, the channel works.
 4. Selecting a video plays `/api/stream/<key>?auth=<token>`; the Worker
    supports byte ranges so seeking works. When a video ends the next one plays.
    Back returns to the grid. If the list fails to load, `*` retries.
+5. While a video plays: **Down** jumps to the next video, **Up** to the previous
+   one, `*` shows the title banner again. Left/Right/OK keep their normal
+   seek and pause behaviour. A video that cannot play (an incomplete upload)
+   is skipped automatically instead of dropping back to the grid.
 
 To point the channel somewhere else, change `m.baseUrl` at the top of
 `components/MainScene.brs`. To change the PIN length, change `m.pinLength`.

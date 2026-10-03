@@ -11,6 +11,8 @@ interface VideoEntry {
 	etag: string;
 	title?: string;
 	group?: string;
+	/** False when the bucket has no `.thumbnails/<key>.jpg` for this video. */
+	hasThumb?: boolean;
 }
 
 type SortMode = "newest" | "oldest" | "name" | "size";
@@ -33,6 +35,10 @@ async function confirmAndDelete(video: VideoEntry): Promise<boolean> {
 	if (r.ok || r.status === 404) return true;
 	window.alert(`Delete failed (HTTP ${r.status}).`);
 	return false;
+}
+
+function thumbUrl(key: string): string {
+	return `/api/thumb/${encodeKey(key)}`;
 }
 
 function formatSize(bytes: number): string {
@@ -240,7 +246,12 @@ function EditDialog({
 	);
 }
 
-/** Grid card — loads its preview (first frame) only once scrolled into view. */
+/**
+ * Grid card — loads its preview only once scrolled into view. Uses the
+ * pre-generated JPEG thumbnail; when the bucket has none (or the image fails
+ * to load) it shows the video's name on the tile instead, so every card is
+ * identifiable even without artwork.
+ */
 function VideoCard({
 	video,
 	possibleDuplicate,
@@ -256,6 +267,8 @@ function VideoCard({
 }) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
+	const [thumbFailed, setThumbFailed] = useState(false);
+	const showTitleTile = video.hasThumb === false || thumbFailed;
 
 	useEffect(() => {
 		const el = ref.current;
@@ -276,15 +289,20 @@ function VideoCard({
 	return (
 		<div className="card" ref={ref} onClick={onPlay} title={video.name}>
 			<div className="thumb">
-				{visible ? (
-					<video
-						src={`${streamUrl(video.key)}#t=0.5`}
-						preload="metadata"
-						muted
-						playsInline
-					/>
-				) : (
+				{showTitleTile ? (
+					<div className="thumb-title">
+						<span>{prettyName(video.name)}</span>
+					</div>
+				) : !visible ? (
 					<div className="thumb-placeholder" />
+				) : (
+					<img
+						src={thumbUrl(video.key)}
+						alt=""
+						loading="lazy"
+						decoding="async"
+						onError={() => setThumbFailed(true)}
+					/>
 				)}
 				<span className="play-badge">▶</span>
 				{possibleDuplicate && (
