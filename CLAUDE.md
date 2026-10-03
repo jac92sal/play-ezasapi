@@ -18,6 +18,8 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 - `GET /api/videos` — full listing of video objects (paginated internally), returns key/name/size/uploaded/contentType/etag
 - `GET /api/thumb/:key` — first-frame JPEG from `.thumbnails/<key>.jpg` (1 day cache)
 - `GET|HEAD /api/stream/:key` — streams an object from R2 with HTTP Range support (seeking works); 1h edge cache headers
+- `POST /api/videos/meta` — `{key, title?, group?}` sets the display title / studio group shown in the web app (stored together in the KV value `library-meta`; empty clears; the object is never renamed). `/api/videos` returns `title` / `group` when set
+- `DELETE /api/videos/:key` — deletes the object, its `.thumbnails/<key>.jpg`, and the `fp:` KV entry when it points at that key (fingerprint recomputed from the object)
 - `POST /api/upload/check` — `{name, fingerprint}` → `{nameExists, contentDuplicateOf}`
 - `PUT /api/upload/direct/:key?fingerprint=` — single-request upload (≤48MB)
 - `POST /api/upload/init` / `PUT /api/upload/part` / `POST /api/upload/complete` / `POST /api/upload/abort` — R2 multipart for large files (48MB parts, client uploads 3 in parallel)
@@ -25,8 +27,11 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 ## Frontend (`src/react-app/`)
 
 Grid of lazy-loaded first-frame previews → click to open player overlay with
-search, sort (newest/oldest/name/size), autoplay-next, shuffle, and an Up Next
-queue. Keyboard: Esc close, Shift+←/→ prev/next.
+search, sort (newest/oldest/name/size), autoplay-next, shuffle, an Up Next
+queue, "Group by studio" sections (studio guessed from the name prefix, e.g.
+`BSB 00072`, `BiLatinMen - …`, `Chaos Men - …`, with a manual override), per-video
+Title / Group editing (✎), a "Possible duplicates" filter (videos sharing an exact byte size, listed
+side by side), and delete (card hover button or player button, with confirm). Keyboard: Esc close, Shift+←/→ prev/next.
 
 ## Roku channel (`roku/`)
 

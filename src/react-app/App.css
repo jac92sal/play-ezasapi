@@ -534,3 +534,163 @@
 		max-height: 35vh;
 	}
 }
+
+/* ---- delete + duplicate finder ---- */
+.dup-toggle {
+	white-space: nowrap;
+}
+.dup-badge {
+	position: absolute;
+	left: 8px;
+	top: 8px;
+	padding: 3px 7px;
+	border-radius: 999px;
+	background: rgba(255, 170, 60, 0.92);
+	color: #1a1200;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	pointer-events: none;
+}
+.card-btn.card-delete:hover {
+	border-color: #ff7a7a;
+	color: #ff7a7a;
+}
+.player-controls .danger:hover {
+	border-color: #ff7a7a;
+	color: #ff7a7a;
+}
+
+/* ---- titles, groups, edit dialog ---- */
+.card-actions {
+	position: absolute;
+	right: 8px;
+	top: 8px;
+	display: flex;
+	gap: 6px;
+}
+.card-btn {
+	width: 32px;
+	height: 32px;
+	border: 1px solid rgba(255, 255, 255, 0.25);
+	border-radius: 8px;
+	background: rgba(0, 0, 0, 0.6);
+	color: #fff;
+	font-size: 0.95rem;
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.card:hover .card-btn,
+.card-btn:focus-visible {
+	opacity: 1;
+}
+.card-btn:hover {
+	border-color: var(--accent);
+}
+@media (hover: none) {
+	.card-btn {
+		opacity: 1;
+	}
+}
+.sections {
+	display: flex;
+	flex-direction: column;
+	gap: 28px;
+	padding: 20px 24px 40px;
+}
+.sections .grid {
+	padding: 0;
+}
+.group-title {
+	margin: 0 0 12px;
+	font-size: 1.05rem;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+.group-count {
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--text-dim);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 2px 9px;
+}
+.player-group {
+	margin-left: 10px;
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--text-dim);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 2px 8px;
+	vertical-align: middle;
+}
+.edit-panel {
+	width: min(520px, 94vw);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	padding: 18px 20px 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.edit-panel h2 {
+	margin: 0;
+	font-size: 1.1rem;
+}
+.edit-file {
+	font-size: 0.8rem;
+	color: var(--text-dim);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.edit-field {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	font-size: 0.85rem;
+	color: var(--text-dim);
+}
+.edit-field input {
+	padding: 9px 11px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--surface-2);
+	color: var(--text);
+	font-size: 0.95rem;
+}
+.edit-field input:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+.edit-hint {
+	font-size: 0.78rem;
+	color: var(--text-dim);
+}
+.edit-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.edit-actions button {
+	background: var(--surface-2);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 8px 14px;
+	cursor: pointer;
+}
+.edit-actions .primary {
+	border: none;
+	background: linear-gradient(135deg, var(--accent), var(--accent-2));
+	color: #fff;
+	font-weight: 600;
+}
