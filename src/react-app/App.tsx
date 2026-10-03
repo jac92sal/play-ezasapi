@@ -154,6 +154,14 @@ function EditDialog({
 	const [error, setError] = useState<string | null>(null);
 	const guessed = autoGroup(video.name);
 
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape" && !busy) onClose();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [busy, onClose]);
+
 	const save = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (busy) return;
