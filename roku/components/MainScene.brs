@@ -15,8 +15,14 @@ sub init()
     m.npTimer.observeField("fire", "hideNowPlaying")
     m.errorStreak = 0
     m.skipped = 0
-    m.videos = []
+    m.allVideos = []    ' every video from the site, newest first
+    m.videos = []       ' the ones shown in the grid (after the favorites filter)
     m.currentIndex = -1
+    m.favFilter = readRegistry("favFilter")
+    if m.favFilter = "" then m.favFilter = "all"
+    m.needsRefilter = false
+    m.favTasks = []
+    m.dialog = invalid
     m.submitting = false
     m.token = readRegistry("token")
 
@@ -116,22 +122,227 @@ sub onVideosDone()
         return
     end if
 
-    m.videos = result.videos
-    m.videos.sortBy("uploaded", "r") ' newest first, same default as the web app
+    m.allVideos = result.videos
+    m.allVideos.sortBy("uploaded", "r") ' newest first, same default as the web app
+    applyFilter("")
+end sub
+
+' ---------- favorites filter ----------
+
+' Rebuilds the grid from m.allVideos for the current filter and keeps focus on
+' the video with focusKey when it is still listed.
+sub applyFilter(focusKey as string)
+    m.needsRefilter = false
+    m.videos = []
+    for each v in m.allVideos
+        if matchesFilter(v) then m.videos.push(v)
+    end for
 
     content = CreateObject("roSGNode", "ContentNode")
-    for each v in m.videos
+    focusIndex = 0
+    for i = 0 to m.videos.count() - 1
+        v = m.videos[i]
         item = content.createChild("ContentNode")
         item.title = prettyName(v.name)
         item.hdPosterUrl = v.thumbUrl
         item.shortDescriptionLine1 = item.title
-        item.shortDescriptionLine2 = formatSize(v.size) + "  ·  " + Left(v.uploaded, 10)
+        item.shortDescriptionLine2 = caption2(v)
+        if v.key = focusKey then focusIndex = i
     end for
 
     m.grid.content = content
     m.grid.visible = true
-    m.status.text = m.videos.count().toStr() + " videos"
+    if m.videos.count() > 0 then m.grid.jumpToItem = focusIndex
+    updateStatus()
     m.grid.setFocus(true)
+end sub
+
+function matchesFilter(v as object) as boolean
+    if m.favFilter = "all" then return true
+    level = favOf(v)
+    if m.favFilter = "any" then return level <> ""
+    return level = m.favFilter
+end function
+
+function favOf(v as object) as string
+    if v.fav = invalid then return ""
+    return v.fav
+end function
+
+function favWord(level as string) as string
+    if level = "gold" then return "Gold"
+    if level = "silver" then return "Silver"
+    if level = "bronze" then return "Bronze"
+    return ""
+end function
+
+function filterLabel() as string
+    if m.favFilter = "any" then return "all favorites"
+    if m.favFilter = "all" then return "all videos"
+    return favWord(m.favFilter) + " favorites"
+end function
+
+' Second caption line: the favorite level (if any), size and upload date.
+function caption2(v as object) as string
+    text = formatSize(v.size) + "  ·  " + Left(v.uploaded, 10)
+    level = favOf(v)
+    if level <> "" then text = UCase(level) + "  ·  " + text
+    return text
+end function
+
+sub updateStatus()
+    if m.videos.count() = 0 and m.favFilter <> "all" then
+        m.status.text = "No " + filterLabel() + " yet.   *: menu"
+    else
+        m.status.text = m.videos.count().toStr() + " videos  ·  showing " + filterLabel() + "   *: menu"
+    end if
+end sub
+
+' ---------- * menu, favorite chooser ----------
+
+sub openMenu()
+    m.menuActions = ["all", "any", "gold", "silver", "bronze", "setfav", "refresh"]
+    labels = ["Show all videos", "Show all favorites", "Show Gold", "Show Silver", "Show Bronze", "Set favorite for this video", "Refresh list"]
+    for i = 0 to 4
+        if m.menuActions[i] = m.favFilter then labels[i] = labels[i] + "  (showing)"
+    end for
+    if m.videos.count() = 0 then
+        ' Nothing focused to set a favorite on.
+        m.menuActions.delete(5)
+        labels.delete(5)
+    end if
+    showDialog("play.ezasapi", "Showing " + filterLabel(), labels, "onMenuChoice")
+end sub
+
+sub onMenuChoice(event as object)
+    action = m.menuActions[event.getRoSGNode().buttonSelected]
+    closeDialog()
+    if action = "refresh" then
+        loadVideos()
+    else if action = "setfav" then
+        index = m.grid.itemFocused
+        if index >= 0 and index < m.videos.count() then openFavChooser(m.videos[index])
+    else
+        m.favFilter = action
+        writeRegistry("favFilter", m.favFilter)
+        focusKey = ""
+        index = m.grid.itemFocused
+        if index >= 0 and index < m.videos.count() then focusKey = m.videos[index].key
+        applyFilter(focusKey)
+    end if
+end sub
+
+sub openFavChooser(v as object)
+    m.favTarget = v
+    m.favChoices = ["gold", "silver", "bronze", ""]
+    labels = ["Gold", "Silver", "Bronze", "Not a favorite"]
+    current = favOf(v)
+    for i = 0 to 3
+        if m.favChoices[i] = current then labels[i] = labels[i] + "  (current)"
+    end for
+    showDialog("Favorite", prettyName(v.name), labels, "onFavChoice")
+end sub
+
+sub onFavChoice(event as object)
+    level = m.favChoices[event.getRoSGNode().buttonSelected]
+    v = m.favTarget
+    closeDialog()
+    if v <> invalid then setFav(v, level)
+end sub
+
+' Saves a favorite level ("" clears it). The grid updates at once and is put
+' back if the site rejects the change.
+sub setFav(v as object, level as string)
+    previous = favOf(v)
+    if previous = level then return
+    applyFavLocally(v.key, level)
+
+    task = CreateObject("roSGNode", "ApiTask")
+    task.baseUrl = m.baseUrl
+    task.mode = "fav"
+    task.token = m.token
+    task.videoKey = v.key
+    task.fav = level
+    task.addFields({ previousFav: previous })
+    task.observeField("status", "onFavSaved")
+    ' Keep a reference until it finishes; several saves can be in flight.
+    m.favTasks.push(task)
+    task.control = "RUN"
+end sub
+
+sub onFavSaved(event as object)
+    task = event.getRoSGNode()
+    for i = m.favTasks.count() - 1 to 0 step -1
+        if m.favTasks[i].isSameNode(task) then m.favTasks.delete(i)
+    end for
+    if task.status = 200 then return
+    applyFavLocally(task.videoKey, task.previousFav)
+    if task.status = 401 then
+        m.status.text = "Favorite not saved: sign in again (press * to refresh)"
+    else
+        m.status.text = "Favorite not saved (HTTP " + task.status.toStr() + ")"
+    end if
+end sub
+
+sub applyFavLocally(key as string, level as string)
+    for each v in m.allVideos
+        if v.key = key then
+            if level = "" then v.delete("fav") else v.fav = level
+        end if
+    end for
+    ' Update captions in place; drop or add items only when the grid is in front,
+    ' so a change during playback never shifts what Down/Up play next.
+    for i = 0 to m.videos.count() - 1
+        if m.videos[i].key = key then
+            item = m.grid.content.getChild(i)
+            if item <> invalid then item.shortDescriptionLine2 = caption2(m.videos[i])
+        end if
+    end for
+    if m.favFilter <> "all" then
+        if m.player.visible then
+            m.needsRefilter = true
+        else
+            applyFilter(key)
+        end if
+    end if
+    if m.player.visible then showNowPlaying("")
+end sub
+
+sub showDialog(title as string, message as string, buttons as object, handler as string)
+    dialog = CreateObject("roSGNode", "Dialog")
+    dialog.title = title
+    dialog.message = message
+    dialog.buttons = buttons
+    dialog.observeField("buttonSelected", handler)
+    dialog.observeField("wasClosed", "onDialogClosed")
+    m.dialog = dialog
+    m.top.dialog = dialog
+end sub
+
+' Closes the dialog a choice came from. Clears m.dialog right away rather than
+' waiting for wasClosed, so the remote keeps working either way.
+sub closeDialog()
+    dialog = m.dialog
+    m.dialog = invalid
+    if dialog <> invalid then dialog.close = true
+    restoreFocus()
+end sub
+
+sub restoreFocus()
+    if m.player.visible then
+        m.player.setFocus(true)
+    else
+        m.grid.setFocus(true)
+    end if
+end sub
+
+' Back (or a choice) closed a dialog: give focus back to what is on screen.
+' A dialog that closed after another one opened (menu -> chooser) is ignored.
+sub onDialogClosed(event as object)
+    closed = event.getRoSGNode()
+    if m.dialog = invalid or not m.dialog.isSameNode(closed) then return
+    m.dialog = invalid
+    restoreFocus()
 end sub
 
 ' ---------- playback ----------
@@ -206,7 +417,10 @@ sub showNowPlaying(suffix as string)
     if m.currentIndex < 0 or m.currentIndex >= m.videos.count() then return
     v = m.videos[m.currentIndex]
     position = (m.currentIndex + 1).toStr() + " of " + m.videos.count().toStr()
-    m.npTitle.text = prettyName(v.name) + "   ·   " + position + suffix
+    level = favOf(v)
+    medal = ""
+    if level <> "" then medal = "   ·   " + favWord(level) + " favorite"
+    m.npTitle.text = prettyName(v.name) + "   ·   " + position + medal + suffix
     m.nowPlaying.visible = true
     m.npTimer.control = "stop"
     m.npTimer.control = "start"
@@ -220,11 +434,18 @@ sub stopPlayer()
     m.player.control = "stop"
     m.player.visible = false
     hideNowPlaying()
+    if m.needsRefilter and m.currentIndex >= 0 and m.currentIndex < m.videos.count() then
+        applyFilter(m.videos[m.currentIndex].key)
+    else if m.needsRefilter then
+        applyFilter("")
+    end if
     m.grid.setFocus(true)
 end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
+    ' Keys a dialog leaves unhandled must not open another one behind it.
+    if m.dialog <> invalid then return false
     if m.player.visible then
         ' The Video node keeps Left/Right/OK/Play/Rewind/FastForward for
         ' seeking and pausing; Up/Down/* reach us here.
@@ -238,11 +459,19 @@ function onKeyEvent(key as string, press as boolean) as boolean
             playPrevious()
             return true
         else if key = "options" then
+            ' *: choose a favorite level for the video that is playing.
             showNowPlaying("")
+            if m.currentIndex >= 0 and m.currentIndex < m.videos.count() then
+                openFavChooser(m.videos[m.currentIndex])
+            end if
             return true
         end if
-    else if key = "options" and not m.grid.visible then
-        loadVideos()
+    else if key = "options" then
+        if m.grid.visible then
+            openMenu()
+        else
+            loadVideos()
+        end if
         return true
     end if
     return false

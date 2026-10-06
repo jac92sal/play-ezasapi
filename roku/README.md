@@ -22,14 +22,22 @@ own: if the Worker is up, the channel works.
    is only asked once (or again if the PIN is changed on the server).
 2. `GET /api/videos` with `Authorization: Bearer <token>` fills the grid,
    newest first.
-3. Posters load from `/api/thumb/<key>?auth=<token>`.
+3. Posters load from `/api/thumb/<key>?auth=<token>`. Videos without a
+   thumbnail JPEG show the placeholder until the PC sync script (ffmpeg) or the
+   web app saves one.
 4. Selecting a video plays `/api/stream/<key>?auth=<token>`; the Worker
    supports byte ranges so seeking works. When a video ends the next one plays.
    Back returns to the grid. If the list fails to load, `*` retries.
 5. While a video plays: **Down** jumps to the next video, **Up** to the previous
-   one, `*` shows the title banner again. Left/Right/OK keep their normal
+   one, `*` shows the title banner and opens the favorite chooser (Gold,
+   Silver, Bronze, Not a favorite). Left/Right/OK keep their normal
    seek and pause behaviour. A video that cannot play (an incomplete upload)
    is skipped automatically instead of dropping back to the grid.
+6. In the grid, `*` opens a menu: show all videos, all favorites, or only
+   Gold / Silver / Bronze (remembered between launches), set the favorite of
+   the focused video, or refresh the list. A favorite's level is shown in
+   capitals on the tile's second caption line. Favorites are the same ones the
+   web app uses (`POST /api/videos/fav`).
 
 To point the channel somewhere else, change `m.baseUrl` at the top of
 `components/MainScene.brs`. To change the PIN length, change `m.pinLength`.

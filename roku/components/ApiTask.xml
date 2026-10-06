@@ -5,6 +5,8 @@
 
   mode = "auth"   : POST {baseUrl}/api/auth with {pin}   -> result.token
   mode = "videos" : GET  {baseUrl}/api/videos (Bearer)   -> result.videos[]
+  mode = "fav"    : POST {baseUrl}/api/videos/fav (Bearer) with {key: videoKey,
+                    fav: "gold" | "silver" | "bronze", or null when fav = ""}
 -->
 <component name="ApiTask" extends="Task">
   <interface>
@@ -12,6 +14,8 @@
     <field id="baseUrl" type="string" />
     <field id="pin" type="string" />
     <field id="token" type="string" />
+    <field id="videoKey" type="string" />
+    <field id="fav" type="string" />
     <field id="status" type="integer" alwaysNotify="true" />
     <field id="result" type="assocarray" />
   </interface>
