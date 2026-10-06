@@ -389,8 +389,94 @@ async function fingerprintObject(bucket: R2Bucket, key: string, size: number): P
 }
 
 /**
+ * One `fp:<sha256>` entry. A live entry points at the object that holds that
+ * content. A tombstone (`deleted: true`) remembers content that was deleted on
+ * the site, so the PC sync does not upload the local copy again. The key is
+ * also kept in the entry's metadata, so listing `fp:` shows which objects are
+ * indexed without reading every value.
+ */
+interface FpEntry {
+	key?: string;
+	size?: number;
+	deleted?: boolean;
+}
+
+function parseFp(raw: string | null): FpEntry | null {
+	if (raw === null) return null;
+	try {
+		const v = JSON.parse(raw) as unknown;
+		if (v && typeof v === "object") return v as FpEntry;
+	} catch {
+		// Older entries stored the bare key.
+	}
+	return { key: raw };
+}
+
+/** KV metadata is limited to 1024 bytes; very long keys go without it. */
+function fpMetadata(field: "key" | "deleted", key: string): Record<string, string> | undefined {
+	const md = { [field]: key };
+	return new TextEncoder().encode(JSON.stringify(md)).byteLength <= 1000 ? md : undefined;
+}
+
+function putFp(kv: KVNamespace, fingerprint: string, key: string, size: number): Promise<void> {
+	return kv.put(`${FP_PREFIX}${fingerprint}`, JSON.stringify({ key, size }), {
+		metadata: fpMetadata("key", key),
+	});
+}
+
+function putFpTombstone(kv: KVNamespace, fingerprint: string, key: string, size: number): Promise<void> {
+	return kv.put(
+		`${FP_PREFIX}${fingerprint}`,
+		JSON.stringify({ key, size, deleted: true, deletedAt: new Date().toISOString() }),
+		{ metadata: fpMetadata("deleted", key) },
+	);
+}
+
+/**
+ * Whether `fp:` should now point at `key`: the entry is missing, a tombstone,
+ * already ours, or points at an object that no longer exists. An entry for
+ * another copy of the same content that still exists is left alone.
+ */
+async function fpIsFree(bucket: R2Bucket, entry: FpEntry | null, ...ours: string[]): Promise<boolean> {
+	if (!entry || entry.deleted || !entry.key || ours.includes(entry.key)) return true;
+	return (await bucket.head(entry.key)) === null;
+}
+
+/** Objects up to this size are copied in one put; larger ones in parts. */
+const COPY_SINGLE_MAX = 4 * 1024 * 1024 * 1024;
+const COPY_PART = 256 * 1024 * 1024;
+
+/** Copy an object to a new key, streaming (R2 has no server-side copy here). */
+async function copyObject(bucket: R2Bucket, src: R2ObjectBody, toKey: string): Promise<void> {
+	const options = { httpMetadata: src.httpMetadata, customMetadata: src.customMetadata };
+	if (src.size <= COPY_SINGLE_MAX) {
+		const { readable, writable } = new FixedLengthStream(src.size);
+		await Promise.all([src.body.pipeTo(writable), bucket.put(toKey, readable, options)]);
+		return;
+	}
+	await src.body.cancel();
+	const upload = await bucket.createMultipartUpload(toKey, options);
+	try {
+		const parts: R2UploadedPart[] = [];
+		for (let offset = 0, n = 1; offset < src.size; offset += COPY_PART, n++) {
+			const length = Math.min(COPY_PART, src.size - offset);
+			const piece = await bucket.get(src.key, { range: { offset, length } });
+			if (!piece) throw new Error("source disappeared during copy");
+			const { readable, writable } = new FixedLengthStream(length);
+			const [, part] = await Promise.all([piece.body.pipeTo(writable), upload.uploadPart(n, readable)]);
+			parts.push(part);
+		}
+		await upload.complete(parts);
+	} catch (e) {
+		await upload.abort().catch(() => {});
+		throw e;
+	}
+}
+
+/**
  * Set or clear the display title and group of a video. Send an empty string
- * (or omit the field) to clear it; the file in the bucket is never renamed.
+ * (or omit the field) to clear it. This never renames the file; that is
+ * `POST /api/videos/rename`.
  */
 app.post("/api/videos/meta", async (c) => {
 	const body = await c.req.json<{ key?: string; title?: string; group?: string }>().catch(() => null);
@@ -438,11 +524,109 @@ app.post("/api/videos/fav", async (c) => {
 	return c.json({ ok: true, key, fav });
 });
 
+/** Characters Windows does not allow in a file name (the PC sync mirrors names). */
+const BAD_NAME_CHARS = /[<>:"/\\|?*]/;
+
+function badFileName(name: string): boolean {
+	return BAD_NAME_CHARS.test(name) || [...name].some((ch) => ch.charCodeAt(0) < 32);
+}
+
 /**
- * Delete a video. Removes the object, its `.thumbnails/<key>.jpg`, and the
- * fingerprint index entry if it points at this key (so the same content can
- * be uploaded again later without being reported as a duplicate of a file
- * that no longer exists).
+ * Rename a video: the object is copied to the new key and the old one removed,
+ * with its thumbnail, group, favorite and fingerprint entry moving along. Send
+ * `name` (a file name, kept in the same folder and with the same extension) or
+ * `newKey` (a full key, used by the PC sync when a file was renamed there).
+ * A display title set earlier is dropped, since the name now says it.
+ */
+app.post("/api/videos/rename", async (c) => {
+	const body = await c.req.json<{ key?: string; name?: string; newKey?: string }>().catch(() => null);
+	const key = body?.key;
+	if (!key || badKey(key) || key.startsWith(THUMB_PREFIX)) return c.json({ error: "bad key" }, 400);
+
+	let newKey: string;
+	if (typeof body?.newKey === "string") {
+		newKey = body.newKey;
+	} else if (typeof body?.name === "string") {
+		const dot = key.lastIndexOf(".");
+		const ext = dot > key.lastIndexOf("/") ? key.slice(dot) : "";
+		let name = body.name.trim().replace(/\s+/g, " ");
+		if (ext && name.toLowerCase().endsWith(ext.toLowerCase())) name = name.slice(0, -ext.length);
+		name = name.replace(/[. ]+$/, "");
+		if (!name || name.length > 200 || badFileName(name)) {
+			return c.json({ error: 'name must be 1-200 characters without < > : " / \\ | ? *' }, 400);
+		}
+		newKey = key.slice(0, key.lastIndexOf("/") + 1) + name + ext;
+	} else {
+		return c.json({ error: "name required" }, 400);
+	}
+	if (badKey(newKey) || newKey.startsWith(THUMB_PREFIX) || !(extensionOf(newKey) in VIDEO_EXTENSIONS)) {
+		return c.json({ error: "bad new name" }, 400);
+	}
+	if (newKey === key) return c.json({ ok: true, key, renamed: false });
+
+	const bucket = c.env.ENTERTAINMENTVIDEOS;
+	const kv = c.env.HASHES;
+	if (await bucket.head(newKey)) return c.json({ error: "a video with that name already exists" }, 409);
+	const src = await bucket.get(key);
+	if (!src) return c.json({ error: "not found" }, 404);
+
+	try {
+		await copyObject(bucket, src, newKey);
+		const copied = await bucket.head(newKey);
+		if (!copied || copied.size !== src.size) throw new Error("copy is incomplete");
+	} catch (e) {
+		await bucket.delete(newKey).catch(() => {});
+		return c.json({ error: `rename failed: ${e instanceof Error ? e.message : "copy failed"}` }, 500);
+	}
+
+	// Point the fingerprint at the new key, so the PC sync sees the content is
+	// still on the site (and renames its own copy to match).
+	const fingerprint = await fingerprintObject(bucket, newKey, src.size).catch(() => null);
+	if (fingerprint) {
+		const entry = parseFp(await kv.get(`${FP_PREFIX}${fingerprint}`));
+		if (await fpIsFree(bucket, entry, key, newKey)) await putFp(kv, fingerprint, newKey, src.size);
+	}
+
+	const thumb = await bucket.get(thumbKeyFor(key));
+	if (thumb) {
+		await bucket.put(thumbKeyFor(newKey), await thumb.arrayBuffer(), {
+			httpMetadata: { contentType: "image/jpeg" },
+		});
+	}
+
+	const meta = await readMeta(kv);
+	const group = meta[key]?.group;
+	if (meta[key]) {
+		delete meta[key];
+		if (group) meta[newKey] = { group };
+		await writeMeta(kv, meta);
+	}
+
+	const fav = await kv.get(`${FAV_PREFIX}${key}`);
+	const newFavKey = `${FAV_PREFIX}${newKey}`;
+	if (isFavLevel(fav) && new TextEncoder().encode(newFavKey).byteLength <= KV_KEY_MAX_BYTES) {
+		await kv.put(newFavKey, fav, { metadata: { fav } });
+	}
+	await kv.delete(`${FAV_PREFIX}${key}`);
+
+	await bucket.delete([key, thumbKeyFor(key)]);
+	return c.json({
+		ok: true,
+		renamed: true,
+		oldKey: key,
+		key: newKey,
+		name: newKey.split("/").pop() ?? newKey,
+		group: group ?? null,
+		fav: isFavLevel(fav) ? fav : null,
+	});
+});
+
+/**
+ * Delete a video. Removes the object and its `.thumbnails/<key>.jpg`, and
+ * turns its fingerprint entry into a tombstone, so the PC sync knows the
+ * content was deleted on purpose and does not upload its local copy again.
+ * (Uploading the same file on the website still works and revives it.) An
+ * entry that points at another copy of the same content is left alone.
  */
 app.delete("/api/videos/:key{.+}", async (c) => {
 	const key = decodeURIComponent(c.req.param("key"));
@@ -452,27 +636,17 @@ app.delete("/api/videos/:key{.+}", async (c) => {
 	const head = await bucket.head(key);
 	if (!head) return c.json({ error: "not found" }, 404);
 
-	let fingerprintCleared = false;
+	let tombstoned = false;
 	const fingerprint = await fingerprintObject(bucket, key, head.size).catch(() => null);
 	if (fingerprint) {
-		const fpKey = `${FP_PREFIX}${fingerprint}`;
-		const hit = await c.env.HASHES.get(fpKey);
-		if (hit) {
-			let indexed: string | undefined;
-			try {
-				indexed = (JSON.parse(hit) as { key?: string }).key;
-			} catch {
-				indexed = hit;
-			}
-			if (indexed === key) {
-				await c.env.HASHES.delete(fpKey);
-				fingerprintCleared = true;
-			}
+		const entry = parseFp(await c.env.HASHES.get(`${FP_PREFIX}${fingerprint}`));
+		if (await fpIsFree(bucket, entry, key)) {
+			await putFpTombstone(c.env.HASHES, fingerprint, key, head.size);
+			tombstoned = true;
 		}
 	}
 
-	const thumbKey = `${THUMB_PREFIX}${key}.jpg`;
-	await bucket.delete([key, thumbKey]);
+	await bucket.delete([key, thumbKeyFor(key)]);
 
 	const meta = await readMeta(c.env.HASHES);
 	if (meta[key]) {
@@ -480,7 +654,7 @@ app.delete("/api/videos/:key{.+}", async (c) => {
 		await writeMeta(c.env.HASHES, meta);
 	}
 	await c.env.HASHES.delete(`${FAV_PREFIX}${key}`);
-	return c.json({ ok: true, key, size: head.size, fingerprintCleared });
+	return c.json({ ok: true, key, size: head.size, tombstoned });
 });
 
 function badKey(key: string): boolean {
@@ -493,7 +667,11 @@ function badKey(key: string): boolean {
 	);
 }
 
-/** Duplicate check: by filename and by content fingerprint. */
+/**
+ * Duplicate check: by filename and by content fingerprint. `deletedOnSite` is
+ * the key the same content had when it was deleted on the site (the PC sync
+ * skips such files; the website uploader ignores it).
+ */
 app.post("/api/upload/check", async (c) => {
 	const { name, fingerprint } = await c.req.json<{
 		name?: string;
@@ -508,15 +686,15 @@ app.post("/api/upload/check", async (c) => {
 			: Promise.resolve(null),
 	]);
 
+	const entry = parseFp(fpHit);
 	let contentDuplicateOf: string | null = null;
-	if (fpHit) {
-		try {
-			contentDuplicateOf = (JSON.parse(fpHit) as { key: string }).key;
-		} catch {
-			contentDuplicateOf = fpHit;
-		}
+	let deletedOnSite: string | null = null;
+	if (entry?.deleted) {
+		deletedOnSite = entry.key ?? "";
+	} else if (entry?.key && (await c.env.ENTERTAINMENTVIDEOS.head(entry.key))) {
+		contentDuplicateOf = entry.key;
 	}
-	return c.json({ nameExists: head !== null, contentDuplicateOf });
+	return c.json({ nameExists: head !== null, contentDuplicateOf, deletedOnSite });
 });
 
 /** Small files — single-request upload. */
@@ -530,10 +708,7 @@ app.put("/api/upload/direct/:key{.+}", async (c) => {
 		httpMetadata: { contentType },
 	});
 	if (fingerprint) {
-		await c.env.HASHES.put(
-			`${FP_PREFIX}${fingerprint}`,
-			JSON.stringify({ key, size: object.size }),
-		);
+		await putFp(c.env.HASHES, fingerprint, key, object.size);
 	}
 	return c.json({ ok: true, key, size: object.size });
 });
@@ -580,10 +755,7 @@ app.post("/api/upload/complete", async (c) => {
 	try {
 		const object = await upload.complete(parts);
 		if (fingerprint) {
-			await c.env.HASHES.put(
-				`${FP_PREFIX}${fingerprint}`,
-				JSON.stringify({ key, size: object.size }),
-			);
+			await putFp(c.env.HASHES, fingerprint, key, object.size);
 		}
 		return c.json({ ok: true, key, size: object.size });
 	} catch (e) {
@@ -602,11 +774,65 @@ app.post("/api/upload/register", async (c) => {
 	}
 	const head = await c.env.ENTERTAINMENTVIDEOS.head(key);
 	if (!head) return c.json({ error: "object not found" }, 404);
-	await c.env.HASHES.put(
-		`${FP_PREFIX}${fingerprint}`,
-		JSON.stringify({ key, size: head.size }),
-	);
+	await putFp(c.env.HASHES, fingerprint, key, head.size);
 	return c.json({ ok: true, key, size: head.size });
+});
+
+/**
+ * Add videos that are missing from the fingerprint index (uploaded before it
+ * existed, or straight to the bucket), so the PC sync recognises their content
+ * even under another file name. Works through the bucket in key order, a few
+ * videos per call: call again with `after` = the returned `next` until `next`
+ * is null. Videos already indexed cost nothing; `duplicates` lists videos
+ * whose content another video already has.
+ */
+app.post("/api/index/backfill", async (c) => {
+	const after = c.req.query("after") || undefined;
+	const limit = Math.min(Math.max(Number(c.req.query("limit")) || 8, 1), 25);
+	const bucket = c.env.ENTERTAINMENTVIDEOS;
+	const kv = c.env.HASHES;
+
+	const indexed = new Set<string>();
+	let kvCursor: string | undefined;
+	do {
+		const page = await kv.list<{ key?: unknown }>({ prefix: FP_PREFIX, cursor: kvCursor });
+		for (const k of page.keys) {
+			if (typeof k.metadata?.key === "string") indexed.add(k.metadata.key);
+		}
+		kvCursor = page.list_complete ? undefined : page.cursor;
+	} while (kvCursor);
+
+	const todo: { key: string; size: number }[] = [];
+	let next: string | null = null;
+	let cursor: string | undefined;
+	scan: do {
+		const page = await bucket.list(cursor ? { cursor, limit: 1000 } : { startAfter: after, limit: 1000 });
+		for (const obj of page.objects) {
+			if (obj.key.startsWith(THUMB_PREFIX) || !(extensionOf(obj.key) in VIDEO_EXTENSIONS)) continue;
+			if (indexed.has(obj.key)) continue;
+			if (todo.length === limit) {
+				next = todo[todo.length - 1].key;
+				break scan;
+			}
+			todo.push({ key: obj.key, size: obj.size });
+		}
+		cursor = page.truncated ? page.cursor : undefined;
+	} while (cursor);
+
+	let added = 0;
+	const duplicates: { key: string; duplicateOf: string }[] = [];
+	for (const { key, size } of todo) {
+		const fingerprint = await fingerprintObject(bucket, key, size).catch(() => null);
+		if (!fingerprint) continue;
+		const entry = parseFp(await kv.get(`${FP_PREFIX}${fingerprint}`));
+		if (await fpIsFree(bucket, entry, key)) {
+			await putFp(kv, fingerprint, key, size);
+			added++;
+		} else if (entry?.key) {
+			duplicates.push({ key, duplicateOf: entry.key });
+		}
+	}
+	return c.json({ ok: true, checked: todo.length, added, duplicates, next });
 });
 
 app.post("/api/upload/abort", async (c) => {

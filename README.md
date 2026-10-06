@@ -17,6 +17,23 @@ Private video library. One R2 bucket, one Cloudflare Worker, and two clients
                           └──────────────────────────────────────────┘
 ```
 
+## Renames, deletes and the PC sync
+
+Every video's content fingerprint is kept in KV (`fp:<sha256>`), so a video is
+recognised by its content whatever its file name is.
+
+- **Rename** on the website (✎) renames the actual file in the bucket
+  (`POST /api/videos/rename`). Its thumbnail, group, favorite and fingerprint
+  entry move with it.
+- **Delete** on the website removes the file and leaves a "deleted" marker on
+  its fingerprint, so the PC sync never uploads that video again.
+- **`docs/sync-videos.ps1`** keeps names in step both ways. A video renamed on
+  the site gets renamed in `C:\Videos\play.ezasapi.source`, and a file renamed
+  there gets renamed on the site. Files deleted on the site are skipped. It
+  also has the site fingerprint older videos that were not indexed yet
+  (`POST /api/index/backfill`), which is what let renamed files sneak back in
+  as duplicates before.
+
 | Piece | Where | What it is |
 |---|---|---|
 | Worker (backend) | `src/worker/index.ts`, `wrangler.jsonc` | The only thing that touches the bucket. Deployed as `play-ezasapi` on `play.ezasapi.com`. |
