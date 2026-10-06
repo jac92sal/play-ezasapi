@@ -13,9 +13,29 @@ interface VideoEntry {
 	group?: string;
 	/** False when the bucket has no `.thumbnails/<key>.jpg` for this video. */
 	hasThumb?: boolean;
+	fav?: FavLevel;
 }
 
-type SortMode = "newest" | "oldest" | "name" | "size";
+type SortMode = "newest" | "oldest" | "name" | "size" | "favorites";
+
+/** Favorite levels, best first. */
+const FAV_LEVELS = ["gold", "silver", "bronze"] as const;
+type FavLevel = (typeof FAV_LEVELS)[number];
+type FavFilter = "all" | "any" | FavLevel;
+const FAV_ICON: Record<FavLevel, string> = { gold: "🥇", silver: "🥈", bronze: "🥉" };
+const FAV_LABEL: Record<FavLevel, string> = { gold: "Gold", silver: "Silver", bronze: "Bronze" };
+
+/** 0 = gold … 3 = not a favorite, for "Favorites first" sorting. */
+function favRank(v: VideoEntry): number {
+	return v.fav ? FAV_LEVELS.indexOf(v.fav) : FAV_LEVELS.length;
+}
+
+/** The card's medal button steps none → gold → silver → bronze → none. */
+function nextFav(fav: FavLevel | undefined): FavLevel | null {
+	if (!fav) return "gold";
+	const i = FAV_LEVELS.indexOf(fav);
+	return i === FAV_LEVELS.length - 1 ? null : FAV_LEVELS[i + 1];
+}
 
 /** How often the grid quietly re-checks the bucket for new/removed videos. */
 const REFRESH_INTERVAL_MS = 60_000;
@@ -262,12 +282,14 @@ function VideoCard({
 	onPlay,
 	onEdit,
 	onDelete,
+	onFav,
 }: {
 	video: VideoEntry;
 	possibleDuplicate: boolean;
 	onPlay: () => void;
 	onEdit: () => void;
 	onDelete: () => void;
+	onFav: (fav: FavLevel | null) => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
@@ -324,7 +346,25 @@ function VideoCard({
 						possible duplicate
 					</span>
 				)}
+				{video.fav && (
+					<span className={`fav-badge fav-${video.fav}`} title={`${FAV_LABEL[video.fav]} favorite`}>
+						{FAV_ICON[video.fav]}
+					</span>
+				)}
 				<div className="card-actions">
+					<button
+						className={`card-btn card-fav${video.fav ? " is-fav" : ""}`}
+						title={(() => {
+							const n = nextFav(video.fav);
+							return n ? `Make ${FAV_LABEL[n]} favorite` : "Remove from favorites";
+						})()}
+						onClick={(e) => {
+							e.stopPropagation();
+							onFav(nextFav(video.fav));
+						}}
+					>
+						{video.fav ? FAV_ICON[video.fav] : "☆"}
+					</button>
 					<button
 						className="card-btn"
 						title="Edit title / group"
@@ -425,6 +465,7 @@ export default function App() {
 	const [shuffle, setShuffle] = useState(false);
 	const [showUpload, setShowUpload] = useState(false);
 	const [dupOnly, setDupOnly] = useState(false);
+	const [favFilter, setFavFilter] = useState<FavFilter>("all");
 	const [grouped, setGrouped] = useState(() => {
 		try {
 			return localStorage.getItem("play.grouped") === "1";
@@ -528,7 +569,8 @@ export default function App() {
 					v.key.toLowerCase().includes(q) ||
 					displayTitle(v).toLowerCase().includes(q) ||
 					groupOf(v).toLowerCase().includes(q)) &&
-				(!dupOnly || duplicateKeys.has(v.key)),
+				(!dupOnly || duplicateKeys.has(v.key)) &&
+				(favFilter === "all" || (favFilter === "any" ? !!v.fav : v.fav === favFilter)),
 		);
 		const sorted = [...filtered];
 		if (dupOnly) {
@@ -549,6 +591,9 @@ export default function App() {
 			case "size":
 				sorted.sort((a, b) => b.size - a.size);
 				break;
+			case "favorites":
+				sorted.sort((a, b) => favRank(a) - favRank(b) || b.uploaded.localeCompare(a.uploaded));
+				break;
 		}
 		if (grouped) {
 			// Stable: keeps the chosen order inside each group, "Other" last.
@@ -559,7 +604,7 @@ export default function App() {
 			sorted.sort((a, b) => rank(a).localeCompare(rank(b)));
 		}
 		return sorted;
-	}, [videos, query, sort, dupOnly, duplicateKeys, grouped]);
+	}, [videos, query, sort, dupOnly, duplicateKeys, grouped, favFilter]);
 
 	/** Every group label in use, for the edit dialog's suggestions. */
 	const groupNames = useMemo(
@@ -593,6 +638,34 @@ export default function App() {
 				return next;
 			}),
 		);
+	}, []);
+
+	/** Set or clear a favorite level; updates the grid at once and undoes it if saving fails. */
+	const setFav = useCallback((video: VideoEntry, fav: FavLevel | null) => {
+		const apply = (level: FavLevel | null | undefined) =>
+			setVideos((list) =>
+				list.map((v) => {
+					if (v.key !== video.key) return v;
+					const next: VideoEntry = { ...v };
+					if (level) next.fav = level;
+					else delete next.fav;
+					return next;
+				}),
+			);
+		const previous = video.fav;
+		apply(fav);
+		fetch("/api/videos/fav", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ key: video.key, fav }),
+		})
+			.then((r) => {
+				if (!r.ok) throw new Error(`HTTP ${r.status}`);
+			})
+			.catch((e: Error) => {
+				apply(previous);
+				window.alert(`Could not save favorite (${e.message}).`);
+			});
 	}, []);
 
 	// Track the playing video by key so a list refresh (or a re-sort) while
@@ -688,6 +761,21 @@ export default function App() {
 					<option value="oldest">Oldest first</option>
 					<option value="name">Name A–Z</option>
 					<option value="size">Largest first</option>
+					<option value="favorites">Favorites first</option>
+				</select>
+				<select
+					className="sort"
+					value={favFilter}
+					onChange={(e) => setFavFilter(e.target.value as FavFilter)}
+					title="Show only favorites"
+				>
+					<option value="all">All videos</option>
+					<option value="any">★ All favorites</option>
+					{FAV_LEVELS.map((level) => (
+						<option key={level} value={level}>
+							{FAV_ICON[level]} {FAV_LABEL[level]}
+						</option>
+					))}
 				</select>
 				<label className="toggle dup-toggle" title="Put each studio's videos together">
 					<input
@@ -753,6 +841,7 @@ export default function App() {
 										onPlay={() => goTo(s.start + j)}
 										onEdit={() => setEditing(v)}
 										onDelete={() => void removeVideo(v)}
+										onFav={(fav) => setFav(v, fav)}
 									/>
 								))}
 							</div>
@@ -769,6 +858,7 @@ export default function App() {
 							onPlay={() => goTo(i)}
 							onEdit={() => setEditing(v)}
 							onDelete={() => void removeVideo(v)}
+							onFav={(fav) => setFav(v, fav)}
 						/>
 					))}
 				</main>
@@ -832,6 +922,22 @@ export default function App() {
 										/>
 										Shuffle
 									</label>
+									<span className="fav-picker" title="Favorite level">
+										{FAV_LEVELS.map((level) => (
+											<button
+												key={level}
+												className={`fav-pick${current.fav === level ? " active" : ""}`}
+												onClick={() => setFav(current, current.fav === level ? null : level)}
+												title={
+													current.fav === level
+														? `Remove ${FAV_LABEL[level]} favorite`
+														: `Make ${FAV_LABEL[level]} favorite`
+												}
+											>
+												{FAV_ICON[level]}
+											</button>
+										))}
+									</span>
 									<button onClick={() => setEditing(current)} title="Edit title / group">
 										✎ Edit
 									</button>
@@ -858,7 +964,10 @@ export default function App() {
 										onClick={() => goTo(i)}
 									>
 										<span className="up-next-index">{i + 1}</span>
-										<span className="up-next-name">{displayTitle(v)}</span>
+										<span className="up-next-name">
+											{v.fav && <span className="up-next-fav">{FAV_ICON[v.fav]}</span>}
+											{displayTitle(v)}
+										</span>
 										<span className="up-next-size">{formatSize(v.size)}</span>
 									</li>
 								))}

@@ -100,6 +100,8 @@ export interface VideoEntry {
 	title?: string;
 	/** Studio / collection set in the web app (overrides the name-based guess). */
 	group?: string;
+	/** Favorite level set in the web app. */
+	fav?: FavLevel;
 	/** Whether a pre-generated JPEG exists at `.thumbnails/<key>.jpg`. */
 	hasThumb: boolean;
 }
@@ -116,6 +118,38 @@ function thumbKeyFor(videoKey: string): string {
 /** One KV value holds every per-video override, keyed by object key. */
 const META_KV_KEY = "library-meta";
 const META_FIELD_MAX = 200;
+
+/** Favorite levels, best first. */
+const FAV_LEVELS = ["gold", "silver", "bronze"] as const;
+type FavLevel = (typeof FAV_LEVELS)[number];
+
+function isFavLevel(v: unknown): v is FavLevel {
+	return typeof v === "string" && (FAV_LEVELS as readonly string[]).includes(v);
+}
+
+/**
+ * Each favorite is its own KV entry `fav:<video key>` (level also kept in the
+ * entry's metadata so a list returns it). Separate entries mean quick clicks on
+ * several videos can never overwrite each other, unlike the single
+ * `library-meta` value.
+ */
+const FAV_PREFIX = "fav:";
+/** KV keys are limited to 512 bytes. */
+const KV_KEY_MAX_BYTES = 512;
+
+async function readFavs(kv: KVNamespace): Promise<Map<string, FavLevel>> {
+	const favs = new Map<string, FavLevel>();
+	let cursor: string | undefined;
+	do {
+		const page = await kv.list<{ fav?: unknown }>({ prefix: FAV_PREFIX, cursor });
+		for (const k of page.keys) {
+			const level = k.metadata?.fav;
+			if (isFavLevel(level)) favs.set(k.name.slice(FAV_PREFIX.length), level);
+		}
+		cursor = page.list_complete ? undefined : page.cursor;
+	} while (cursor);
+	return favs;
+}
 
 interface VideoMeta {
 	title?: string;
@@ -144,6 +178,7 @@ app.get("/api/videos", async (c) => {
 	const thumbKeys = new Set<string>();
 	let cursor: string | undefined;
 	const metaPromise = readMeta(c.env.HASHES);
+	const favsPromise = readFavs(c.env.HASHES).catch(() => new Map<string, FavLevel>());
 
 	do {
 		const page = await bucket.list({
@@ -179,6 +214,11 @@ app.get("/api/videos", async (c) => {
 		if (!m) continue;
 		if (m.title) video.title = m.title;
 		if (m.group) video.group = m.group;
+	}
+	const favs = await favsPromise;
+	for (const video of videos) {
+		const level = favs.get(video.key);
+		if (level) video.fav = level;
 	}
 
 	return c.json(
@@ -344,6 +384,28 @@ app.post("/api/videos/meta", async (c) => {
 });
 
 /**
+ * Set a video's favorite level ("gold", "silver" or "bronze"), or clear it
+ * with `fav: null`. Title and group are left as they are.
+ */
+app.post("/api/videos/fav", async (c) => {
+	const body = await c.req.json<{ key?: string; fav?: unknown }>().catch(() => null);
+	const key = body?.key;
+	if (!key || badKey(key)) return c.json({ error: "bad key" }, 400);
+	const fav = body?.fav ?? null;
+	if (fav !== null && !isFavLevel(fav)) return c.json({ error: "bad fav" }, 400);
+	const favKey = `${FAV_PREFIX}${key}`;
+	if (new TextEncoder().encode(favKey).byteLength > KV_KEY_MAX_BYTES) {
+		return c.json({ error: "key too long to favorite" }, 400);
+	}
+	const head = await c.env.ENTERTAINMENTVIDEOS.head(key);
+	if (!head) return c.json({ error: "not found" }, 404);
+
+	if (fav) await c.env.HASHES.put(favKey, fav, { metadata: { fav } });
+	else await c.env.HASHES.delete(favKey);
+	return c.json({ ok: true, key, fav });
+});
+
+/**
  * Delete a video. Removes the object, its `.thumbnails/<key>.jpg`, and the
  * fingerprint index entry if it points at this key (so the same content can
  * be uploaded again later without being reported as a duplicate of a file
@@ -384,6 +446,7 @@ app.delete("/api/videos/:key{.+}", async (c) => {
 		delete meta[key];
 		await writeMeta(c.env.HASHES, meta);
 	}
+	await c.env.HASHES.delete(`${FAV_PREFIX}${key}`);
 	return c.json({ ok: true, key, size: head.size, fingerprintCleared });
 });
 

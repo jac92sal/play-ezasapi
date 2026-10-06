@@ -754,3 +754,52 @@
 	color: #fff;
 	font-weight: 600;
 }
+
+/* ---------- favorites (gold / silver / bronze) ---------- */
+.fav-badge {
+	position: absolute;
+	left: 8px;
+	bottom: 8px;
+	width: 30px;
+	height: 30px;
+	display: grid;
+	place-items: center;
+	border-radius: 999px;
+	background: rgba(0, 0, 0, 0.6);
+	font-size: 1.05rem;
+	line-height: 1;
+	pointer-events: none;
+}
+.fav-badge.fav-gold {
+	box-shadow: 0 0 0 2px #e8b931;
+}
+.fav-badge.fav-silver {
+	box-shadow: 0 0 0 2px #c4c9d1;
+}
+.fav-badge.fav-bronze {
+	box-shadow: 0 0 0 2px #c27b42;
+}
+.card-btn.card-fav:hover {
+	border-color: #e8b931;
+}
+.fav-picker {
+	display: inline-flex;
+	gap: 4px;
+}
+.player-controls .fav-pick {
+	padding: 5px 8px;
+	font-size: 1.05rem;
+	line-height: 1;
+	opacity: 0.55;
+}
+.player-controls .fav-pick:hover,
+.player-controls .fav-pick.active {
+	opacity: 1;
+}
+.player-controls .fav-pick.active {
+	border-color: #e8b931;
+	background: rgba(232, 185, 49, 0.18);
+}
+.up-next-fav {
+	margin-right: 4px;
+}
