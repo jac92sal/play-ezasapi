@@ -19,12 +19,12 @@
       failedBitmapUri="pkg:/images/poster-missing.png"
       visible="false" />
     <Video id="player" width="1280" height="720" translation="[0,0]" visible="false" enableUI="true" />
-    <!-- "Now playing" banner shown over the video for a few seconds on each start / Down / Up / * press. -->
+    <!-- "Now playing" banner shown over the video for a few seconds on each start / Down / Up / * press; * also opens the favorite chooser. -->
     <Group id="nowPlaying" visible="false">
       <Rectangle width="1280" height="104" color="0x000000C0" />
       <Label id="npTitle" translation="[40,16]" width="1200" font="font:MediumBoldSystemFont" color="#e8ecf3" />
       <Label id="npHint" translation="[40,62]" width="1200" font="font:SmallSystemFont" color="#9aa3b2"
-        text="Down: next video    Up: previous video    *: show this    Back: video list" />
+        text="Down: next video    Up: previous video    *: favorite    Back: video list" />
     </Group>
     <Timer id="npTimer" duration="4" repeat="false" />
   </children>

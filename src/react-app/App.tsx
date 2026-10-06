@@ -269,6 +269,55 @@ function EditDialog({
 	);
 }
 
+/** Keys whose thumbnail this page has already tried to save, so each is attempted once. */
+const thumbAttempted = new Set<string>();
+
+/**
+ * Save the frame a grid card is showing as the video's `.thumbnails/<key>.jpg`,
+ * so later visits and the Roku channel get a real poster instead of the
+ * placeholder. Skips frames that are almost black (e.g. a fade-in), leaving
+ * those for the ffmpeg step in the PC sync script.
+ */
+function saveFrameAsThumb(el: HTMLVideoElement, key: string) {
+	if (thumbAttempted.has(key) || el.readyState < 2 || el.videoWidth === 0) return;
+	thumbAttempted.add(key);
+	const width = Math.min(640, el.videoWidth);
+	const height = Math.round((el.videoHeight / el.videoWidth) * width);
+	const canvas = document.createElement("canvas");
+	canvas.width = width;
+	canvas.height = height;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) return;
+	try {
+		ctx.drawImage(el, 0, 0, width, height);
+		// Average brightness of a coarse sample; below ~6% counts as black.
+		const { data } = ctx.getImageData(0, 0, width, height);
+		let sum = 0;
+		let n = 0;
+		for (let i = 0; i < data.length; i += 4 * 97) {
+			sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+			n++;
+		}
+		if (n === 0 || sum / n < 16) return;
+	} catch {
+		return;
+	}
+	canvas.toBlob(
+		(blob) => {
+			if (!blob) return;
+			fetch(`/api/thumb/${encodeKey(key)}`, {
+				method: "PUT",
+				headers: { "Content-Type": "image/jpeg" },
+				body: blob,
+			}).catch(() => {
+				/* best effort: the card keeps showing the video frame */
+			});
+		},
+		"image/jpeg",
+		0.82,
+	);
+}
+
 /**
  * Grid card — loads its preview only once scrolled into view. Uses the
  * pre-generated JPEG thumbnail; when the bucket has none (or the image fails
@@ -330,6 +379,10 @@ function VideoCard({
 						muted
 						playsInline
 						onError={() => setFrameFailed(true)}
+						onLoadedData={(e) => {
+							// Only when the bucket has no JPEG; a JPEG that merely failed to load is kept.
+							if (video.hasThumb === false) saveFrameAsThumb(e.currentTarget, video.key);
+						}}
 					/>
 				) : (
 					<img

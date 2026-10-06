@@ -5,6 +5,10 @@ end sub
 sub execute()
     if m.top.mode = "auth" then
         resp = request("POST", m.top.baseUrl + "/api/auth", FormatJson({ pin: m.top.pin }), "")
+    else if m.top.mode = "fav" then
+        level = invalid
+        if m.top.fav <> "" then level = m.top.fav
+        resp = request("POST", m.top.baseUrl + "/api/videos/fav", FormatJson({ key: m.top.videoKey, fav: level }), m.top.token)
     else
         resp = request("GET", m.top.baseUrl + "/api/videos", "", m.top.token)
         if resp.code = 200 and resp.body.videos <> invalid then

@@ -317,6 +317,39 @@ app.get("/api/thumb/:key{.+}", async (c) => {
 	});
 });
 
+/** Largest thumbnail JPEG accepted from a client. */
+const THUMB_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Store a generated thumbnail at `.thumbnails/<key>.jpg`. Used by the PC sync
+ * script (ffmpeg) and by the web app (a frame captured from the grid preview),
+ * so the web grid and the Roku posters both get artwork for new videos.
+ * Body: the JPEG bytes. An existing thumbnail is kept unless `?replace=1`.
+ */
+app.put("/api/thumb/:key{.+}", async (c) => {
+	const key = decodeURIComponent(c.req.param("key"));
+	if (badKey(key) || key.startsWith(THUMB_PREFIX) || !(extensionOf(key) in VIDEO_EXTENSIONS)) {
+		return c.json({ error: "bad key" }, 400);
+	}
+	const bytes = new Uint8Array(await c.req.arrayBuffer());
+	if (bytes.byteLength === 0 || bytes.byteLength > THUMB_MAX_BYTES) {
+		return c.json({ error: "thumbnail must be 1 byte to 2 MB" }, 400);
+	}
+	// JPEG files start with FF D8 FF.
+	if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+		return c.json({ error: "not a JPEG" }, 400);
+	}
+	const bucket = c.env.ENTERTAINMENTVIDEOS;
+	if (!(await bucket.head(key))) return c.json({ error: "video not found" }, 404);
+
+	const thumbKey = thumbKeyFor(key);
+	if (c.req.query("replace") !== "1" && (await bucket.head(thumbKey))) {
+		return c.json({ ok: true, key, stored: false, reason: "exists" });
+	}
+	await bucket.put(thumbKey, bytes, { httpMetadata: { contentType: "image/jpeg" } });
+	return c.json({ ok: true, key, stored: true });
+});
+
 /* ---------------- uploads ---------------- */
 
 const FP_PREFIX = "fp:";
