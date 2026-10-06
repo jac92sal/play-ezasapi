@@ -8,7 +8,7 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 - **Service bindings used:** none (public site, no auth)
 - **Resources:**
   - R2: `entertainmentvideos` → binding `ENTERTAINMENTVIDEOS`
-  - KV: `HASHES` (id `fdaf6f7ff5c24be09b8332785754fde6`) — content-fingerprint index `fp:<sha256>` → `{key,size}`; fingerprint = SHA-256(first 4MB + last 4MB + size)
+  - KV: `HASHES` (id `fdaf6f7ff5c24be09b8332785754fde6`) — content-fingerprint index `fp:<sha256>` → `{key,size}`; fingerprint = SHA-256(first 4MB + last 4MB + size); also `library-meta` (titles/groups) and one `fav:<video key>` entry per favorite
   - Assets: `dist/client` → binding `ASSETS`, SPA fallback, `run_worker_first: ["/api/*"]`
 - **Secrets:** `PLAY_PIN` (Worker secret) — the access PIN; all `/api/*` except `/api/auth` require the HMAC token it derives, presented as the `play_auth` cookie (web), `Authorization: Bearer` header, or `?auth=` query param (Roku posters/video)
 
@@ -19,6 +19,7 @@ Video preview + playback platform for the `entertainmentvideos` R2 bucket.
 - `GET|HEAD /api/stream/:key` — streams an object from R2 with HTTP Range support (seeking works); 1h edge cache headers
 - `GET /api/thumb/:key` — returns the pre-generated JPEG at `.thumbnails/<key>.jpg` (`image/jpeg`, 1d browser / 7d edge cache). If none exists it serves `public/thumb-placeholder.png` (200, `X-Thumb-Placeholder: 1`, 5min cache) so image-only clients such as the Roku PosterGrid still get a tile. Web grid cards skip the request when `hasThumb` is false (or the JPEG fails) and show a first frame from the video instead, falling back to the video name on the tile only if the video cannot load. JPEGs are generated outside this repo, so newly synced videos have none until the next generation run
 - `POST /api/videos/meta` — `{key, title?, group?}` sets the display title / studio group shown in the web app (stored together in the KV value `library-meta`; empty clears; the object is never renamed). `/api/videos` returns `title` / `group` when set
+- `POST /api/videos/fav` — `{key, fav}` with `fav` = `"gold"` | `"silver"` | `"bronze"` sets the favorite level, `null` clears it. Each favorite is its own KV entry `fav:<video key>` (level also in the entry's metadata) so concurrent clicks never overwrite each other. `/api/videos` returns `fav` when set; deleting a video removes its favorite
 - `DELETE /api/videos/:key` — deletes the object, its `.thumbnails/<key>.jpg`, and the `fp:` KV entry when it points at that key (fingerprint recomputed from the object)
 - `POST /api/upload/check` — `{name, fingerprint}` → `{nameExists, contentDuplicateOf}`
 - `PUT /api/upload/direct/:key?fingerprint=` — single-request upload (≤48MB)
@@ -30,7 +31,7 @@ Grid of lazy-loaded first-frame previews → click to open player overlay with
 search, sort (newest/oldest/name/size), autoplay-next, shuffle, an Up Next
 queue, "Group by studio" sections (studio guessed from the name prefix, e.g.
 `BSB 00072`, `BiLatinMen - …`, `Chaos Men - …`, with a manual override), per-video
-Title / Group editing (✎), a "Possible duplicates" filter (videos sharing an exact byte size, listed
+Title / Group editing (✎), gold / silver / bronze favorites (🥇🥈🥉 badge on the card, ☆ card button cycling none → gold → silver → bronze → none, medal buttons in the player, an "All favorites / Gold / Silver / Bronze" filter, and a "Favorites first" sort), a "Possible duplicates" filter (videos sharing an exact byte size, listed
 side by side), and delete (card hover button or player button, with confirm). Keyboard: Esc close, Shift+←/→ prev/next.
 
 ## Roku channel (`roku/`)
