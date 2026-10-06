@@ -9,6 +9,10 @@ interface VideoEntry {
 	uploaded: string;
 	contentType: string;
 	etag: string;
+	title?: string;
+	group?: string;
+	/** False when the bucket has no `.thumbnails/<key>.jpg` for this video. */
+	hasThumb?: boolean;
 }
 
 type SortMode = "newest" | "oldest" | "name" | "size";
@@ -16,8 +20,28 @@ type SortMode = "newest" | "oldest" | "name" | "size";
 /** How often the grid quietly re-checks the bucket for new/removed videos. */
 const REFRESH_INTERVAL_MS = 60_000;
 
+function encodeKey(key: string): string {
+	return key.split("/").map(encodeURIComponent).join("/");
+}
+
 function streamUrl(key: string): string {
-	return `/api/stream/${key.split("/").map(encodeURIComponent).join("/")}`;
+	return `/api/stream/${encodeKey(key)}`;
+}
+
+/** Ask, then delete the video from the bucket. Resolves true when it is gone. */
+async function confirmAndDelete(video: VideoEntry): Promise<boolean> {
+	const ok = window.confirm(
+		`Delete "${video.name}" (${formatSize(video.size)}) from the bucket?\n\nThis cannot be undone.`,
+	);
+	if (!ok) return false;
+	const r = await fetch(`/api/videos/${encodeKey(video.key)}`, { method: "DELETE" });
+	if (r.ok || r.status === 404) return true;
+	window.alert(`Delete failed (HTTP ${r.status}).`);
+	return false;
+}
+
+function thumbUrl(key: string): string {
+	return `/api/thumb/${encodeKey(key)}`;
 }
 
 function formatSize(bytes: number): string {
@@ -39,16 +63,215 @@ function prettyName(name: string): string {
 	return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
 }
 
-/** Grid card — loads its preview (first frame) only once scrolled into view. */
-function VideoCard({
+function displayTitle(video: VideoEntry): string {
+	return video.title || prettyName(video.name);
+}
+
+const OTHER_GROUP = "Other";
+
+/**
+ * Studios whose files are named inconsistently. Keys are the name prefix with
+ * spaces and punctuation removed, lower-case; values are the label to show.
+ */
+const GROUP_ALIASES: Record<string, string> = {
+	bsb: "BSB",
+	bilatinmen: "BiLatinMen",
+	onlyfans: "OnlyFans",
+	of: "OnlyFans",
+	collegedudes: "College Dudes",
+	colledgedudes: "College Dudes",
+	colledgdudes: "College Dudes",
+	guysinsweatpants: "Guys in Sweatpants",
+	chaosmen: "Chaos Men",
+	rawfuckclub: "Raw Fuck Club",
+	rawfuckers: "Raw Fuckers",
+	lucasentertainment: "Lucas Entertainment",
+	lucasenterataintment: "Lucas Entertainment",
+	lucas: "Lucas Entertainment",
+	defiant: "Defiant Skaters",
+	defiantskaters: "Defiant Skaters",
+	timtales: "TimTales",
+	nextdoor: "Next Door",
+	cockyboys: "Cocky Boys",
+	brothercrush: "Brother Crush",
+	sayuncle: "Say Uncle",
+	peterfever: "Peter Fever",
+	badpuppy: "Bad Puppy",
+	ericvideos: "Eric Videos",
+	asiantwinks: "Asian Twinks",
+	rawhole: "Raw Hole",
+	hotrola: "Hot Rola",
+	manhunter: "ManHunter",
+	twinkaboo: "TwinkAboo",
+	falcon: "Falcon",
+	maxedge: "Max Edge",
+	citebeur: "Citebeur",
+	irmaosdotados: "Irmaos Dotados",
+	bth: "BTH",
+};
+
+const normalizeGroup = (g: string) => g.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Guess the studio from the file name: "Studio - Title", "Studio_Title",
+ * "Studio.title", "Studio 00123", or a known studio word at the start. Random
+ * IDs and plain numbers get no group.
+ */
+function autoGroup(name: string): string | null {
+	const base = name.replace(/\.[^.]+$/, "").trim();
+	if (/^\d+$/.test(base)) return null;
+	const match =
+		/^(.+?)\s+-\s+/.exec(base) ??
+		/^([A-Za-z][A-Za-z0-9 ]{1,30}?)\s*[_.]\s*\S/.exec(base) ??
+		/^([A-Za-z][A-Za-z ]{1,30}?)\s+\d{3,}$/.exec(base);
+	const prefix = match?.[1].trim() ?? null;
+	if (!prefix || /^\d/.test(prefix)) {
+		// No separator: check whether it starts with a known studio word.
+		const first = normalizeGroup(base.split(/\s+/).slice(0, 2).join(""));
+		const firstWord = normalizeGroup(base.split(/\s+/)[0]);
+		if (GROUP_ALIASES[firstWord]) return GROUP_ALIASES[firstWord];
+		if (GROUP_ALIASES[first]) return GROUP_ALIASES[first];
+		return null;
+	}
+	const key = normalizeGroup(prefix);
+	if (GROUP_ALIASES[key]) return GROUP_ALIASES[key];
+	// A random id like "8N1oxUB_4Zc9fQi-" or "t5PrYgAk" is not a studio.
+	if (!/[aeiouAEIOU]/.test(prefix) || /^[A-Za-z0-9]{1,2}$/.test(prefix)) return null;
+	if (/\d/.test(prefix) && !/\s/.test(prefix)) return null;
+	return prefix;
+}
+
+function groupOf(video: VideoEntry): string {
+	return video.group || autoGroup(video.name) || OTHER_GROUP;
+}
+
+/** Edit the display title and group of one video. */
+function EditDialog({
 	video,
-	onPlay,
+	groups,
+	onClose,
+	onSaved,
 }: {
 	video: VideoEntry;
+	groups: string[];
+	onClose: () => void;
+	onSaved: (title: string | null, group: string | null) => void;
+}) {
+	const [title, setTitle] = useState(video.title ?? "");
+	const [group, setGroup] = useState(video.group ?? "");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const guessed = autoGroup(video.name);
+
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape" && !busy) onClose();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [busy, onClose]);
+
+	const save = async (e: React.FormEvent) => {
+		e.preventDefault();
+		if (busy) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const r = await fetch("/api/videos/meta", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: video.key, title, group }),
+			});
+			if (!r.ok) throw new Error(`HTTP ${r.status}`);
+			const data = (await r.json()) as { title: string | null; group: string | null };
+			onSaved(data.title, data.group);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "failed");
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div className="player-overlay" onClick={busy ? undefined : onClose}>
+			<form className="edit-panel" onClick={(e) => e.stopPropagation()} onSubmit={save}>
+				<div className="upload-head">
+					<h2>Edit video</h2>
+					<button type="button" className="close" onClick={onClose} disabled={busy}>
+						✕
+					</button>
+				</div>
+				<div className="edit-file" title={video.key}>
+					File: {video.name}
+				</div>
+				<label className="edit-field">
+					<span>Title</span>
+					<input
+						type="text"
+						value={title}
+						autoFocus
+						maxLength={200}
+						placeholder={prettyName(video.name)}
+						onChange={(e) => setTitle(e.target.value)}
+					/>
+				</label>
+				<label className="edit-field">
+					<span>Group</span>
+					<input
+						type="text"
+						value={group}
+						maxLength={200}
+						list="group-options"
+						placeholder={guessed ?? OTHER_GROUP}
+						onChange={(e) => setGroup(e.target.value)}
+					/>
+					<datalist id="group-options">
+						{groups.map((g) => (
+							<option key={g} value={g} />
+						))}
+					</datalist>
+				</label>
+				<div className="edit-hint">
+					Leave a field empty to use the name from the file
+					{guessed ? ` (group guessed as "${guessed}")` : ""}. The file itself is not renamed.
+				</div>
+				{error && <div className="pin-error">Save failed: {error}</div>}
+				<div className="edit-actions">
+					<button type="button" onClick={onClose} disabled={busy}>
+						Cancel
+					</button>
+					<button type="submit" className="primary" disabled={busy}>
+						{busy ? "Saving…" : "Save"}
+					</button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
+/**
+ * Grid card — loads its preview only once scrolled into view. Uses the
+ * pre-generated JPEG thumbnail; when the bucket has none (or the image fails
+ * to load) it shows the video's name on the tile instead, so every card is
+ * identifiable even without artwork.
+ */
+function VideoCard({
+	video,
+	possibleDuplicate,
+	onPlay,
+	onEdit,
+	onDelete,
+}: {
+	video: VideoEntry;
+	possibleDuplicate: boolean;
 	onPlay: () => void;
+	onEdit: () => void;
+	onDelete: () => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
+	const [thumbFailed, setThumbFailed] = useState(false);
+	const showTitleTile = video.hasThumb === false || thumbFailed;
 
 	useEffect(() => {
 		const el = ref.current;
@@ -69,20 +292,52 @@ function VideoCard({
 	return (
 		<div className="card" ref={ref} onClick={onPlay} title={video.name}>
 			<div className="thumb">
-				{visible ? (
-					<video
-						src={`${streamUrl(video.key)}#t=0.5`}
-						preload="metadata"
-						muted
-						playsInline
-					/>
-				) : (
+				{showTitleTile ? (
+					<div className="thumb-title">
+						<span>{prettyName(video.name)}</span>
+					</div>
+				) : !visible ? (
 					<div className="thumb-placeholder" />
+				) : (
+					<img
+						src={thumbUrl(video.key)}
+						alt=""
+						loading="lazy"
+						decoding="async"
+						onError={() => setThumbFailed(true)}
+					/>
 				)}
 				<span className="play-badge">▶</span>
+				{possibleDuplicate && (
+					<span className="dup-badge" title="Another video has exactly the same size">
+						possible duplicate
+					</span>
+				)}
+				<div className="card-actions">
+					<button
+						className="card-btn"
+						title="Edit title / group"
+						onClick={(e) => {
+							e.stopPropagation();
+							onEdit();
+						}}
+					>
+						✎
+					</button>
+					<button
+						className="card-btn card-delete"
+						title="Delete this video"
+						onClick={(e) => {
+							e.stopPropagation();
+							onDelete();
+						}}
+					>
+						🗑
+					</button>
+				</div>
 			</div>
 			<div className="card-meta">
-				<div className="card-title">{prettyName(video.name)}</div>
+				<div className="card-title">{displayTitle(video)}</div>
 				<div className="card-sub">
 					{formatSize(video.size)} · {formatDate(video.uploaded)}
 				</div>
@@ -158,6 +413,15 @@ export default function App() {
 	const [autoNext, setAutoNext] = useState(true);
 	const [shuffle, setShuffle] = useState(false);
 	const [showUpload, setShowUpload] = useState(false);
+	const [dupOnly, setDupOnly] = useState(false);
+	const [grouped, setGrouped] = useState(() => {
+		try {
+			return localStorage.getItem("play.grouped") === "1";
+		} catch {
+			return false;
+		}
+	});
+	const [editing, setEditing] = useState<VideoEntry | null>(null);
 	const playerRef = useRef<HTMLVideoElement>(null);
 
 	const inFlight = useRef(false);
@@ -229,12 +493,38 @@ export default function App() {
 		};
 	}, [locked, loadVideos]);
 
+	/** Videos whose byte size matches another video: the usual sign of a copy under a second name. */
+	const duplicateKeys = useMemo(() => {
+		const bySize = new Map<number, VideoEntry[]>();
+		for (const v of videos) {
+			const group = bySize.get(v.size);
+			if (group) group.push(v);
+			else bySize.set(v.size, [v]);
+		}
+		const keys = new Set<string>();
+		for (const group of bySize.values()) {
+			if (group.length > 1) for (const v of group) keys.add(v.key);
+		}
+		return keys;
+	}, [videos]);
+
 	const queue = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		const filtered = videos.filter(
-			(v) => !q || v.name.toLowerCase().includes(q) || v.key.toLowerCase().includes(q),
+			(v) =>
+				(!q ||
+					v.name.toLowerCase().includes(q) ||
+					v.key.toLowerCase().includes(q) ||
+					displayTitle(v).toLowerCase().includes(q) ||
+					groupOf(v).toLowerCase().includes(q)) &&
+				(!dupOnly || duplicateKeys.has(v.key)),
 		);
 		const sorted = [...filtered];
+		if (dupOnly) {
+			// Keep each same-size pair next to each other so they can be compared.
+			sorted.sort((a, b) => b.size - a.size || a.name.localeCompare(b.name));
+			return sorted;
+		}
 		switch (sort) {
 			case "newest":
 				sorted.sort((a, b) => b.uploaded.localeCompare(a.uploaded));
@@ -243,14 +533,56 @@ export default function App() {
 				sorted.sort((a, b) => a.uploaded.localeCompare(b.uploaded));
 				break;
 			case "name":
-				sorted.sort((a, b) => a.name.localeCompare(b.name));
+				sorted.sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
 				break;
 			case "size":
 				sorted.sort((a, b) => b.size - a.size);
 				break;
 		}
+		if (grouped) {
+			// Stable: keeps the chosen order inside each group, "Other" last.
+			const rank = (v: VideoEntry) => {
+				const g = groupOf(v);
+				return g === OTHER_GROUP ? "\uffff" : g.toLowerCase();
+			};
+			sorted.sort((a, b) => rank(a).localeCompare(rank(b)));
+		}
 		return sorted;
-	}, [videos, query, sort]);
+	}, [videos, query, sort, dupOnly, duplicateKeys, grouped]);
+
+	/** Every group label in use, for the edit dialog's suggestions. */
+	const groupNames = useMemo(
+		() => [...new Set(videos.map(groupOf))].filter((g) => g !== OTHER_GROUP).sort((a, b) => a.localeCompare(b)),
+		[videos],
+	);
+
+	/** Contiguous slices of the queue per group (the queue is group-sorted when grouped). */
+	const sections = useMemo(() => {
+		// The duplicates view is sorted by size so each pair sits together; grouping would split them.
+		if (!grouped || dupOnly) return null;
+		const out: { group: string; start: number; items: VideoEntry[] }[] = [];
+		queue.forEach((v, i) => {
+			const g = groupOf(v);
+			const last = out[out.length - 1];
+			if (last && last.group === g) last.items.push(v);
+			else out.push({ group: g, start: i, items: [v] });
+		});
+		return out;
+	}, [queue, grouped, dupOnly]);
+
+	const applyMeta = useCallback((key: string, title: string | null, group: string | null) => {
+		setVideos((list) =>
+			list.map((v) => {
+				if (v.key !== key) return v;
+				const next: VideoEntry = { ...v };
+				if (title) next.title = title;
+				else delete next.title;
+				if (group) next.group = group;
+				else delete next.group;
+				return next;
+			}),
+		);
+	}, []);
 
 	// Track the playing video by key so a list refresh (or a re-sort) while
 	// something is playing doesn't jump to a different video.
@@ -288,6 +620,22 @@ export default function App() {
 	}, [nowPlaying, goTo]);
 
 	const close = useCallback(() => setPlayingKey(null), []);
+
+	const removeVideo = useCallback(
+		async (video: VideoEntry) => {
+			const wasPlaying = current?.key === video.key;
+			if (wasPlaying) playerRef.current?.pause();
+			if (!(await confirmAndDelete(video))) return;
+			setVideos((list) => list.filter((v) => v.key !== video.key));
+			if (wasPlaying) {
+				// Move on to what was next (or the new last video if it was the last one).
+				const i = nowPlaying ?? -1;
+				const following = queue.length <= 1 || i === -1 ? null : (queue[i + 1] ?? queue[i - 1]);
+				setPlayingKey(following ? following.key : null);
+			}
+		},
+		[current, nowPlaying, queue],
+	);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -330,6 +678,29 @@ export default function App() {
 					<option value="name">Name A–Z</option>
 					<option value="size">Largest first</option>
 				</select>
+				<label className="toggle dup-toggle" title="Put each studio's videos together">
+					<input
+						type="checkbox"
+						checked={grouped}
+						onChange={(e) => {
+							setGrouped(e.target.checked);
+							try {
+								localStorage.setItem("play.grouped", e.target.checked ? "1" : "0");
+							} catch {
+								/* ignore */
+							}
+						}}
+					/>
+					Group by studio
+				</label>
+				<label className="toggle dup-toggle" title="Show only videos that share an exact size with another video">
+					<input
+						type="checkbox"
+						checked={dupOnly}
+						onChange={(e) => setDupOnly(e.target.checked)}
+					/>
+					Possible duplicates{duplicateKeys.size > 0 ? ` (${duplicateKeys.size})` : ""}
+				</label>
 				<span className="count">
 					{loading ? "Loading…" : `${queue.length} video${queue.length === 1 ? "" : "s"}`}
 				</span>
@@ -355,11 +726,54 @@ export default function App() {
 				<div className="notice">No videos match.</div>
 			)}
 
-			<main className="grid">
-				{queue.map((v, i) => (
-					<VideoCard key={v.key} video={v} onPlay={() => goTo(i)} />
-				))}
-			</main>
+			{sections ? (
+				<main className="sections">
+					{sections.map((s) => (
+						<section key={s.group} className="group-section">
+							<h2 className="group-title">
+								{s.group} <span className="group-count">{s.items.length}</span>
+							</h2>
+							<div className="grid">
+								{s.items.map((v, j) => (
+									<VideoCard
+										key={v.key}
+										video={v}
+										possibleDuplicate={duplicateKeys.has(v.key)}
+										onPlay={() => goTo(s.start + j)}
+										onEdit={() => setEditing(v)}
+										onDelete={() => void removeVideo(v)}
+									/>
+								))}
+							</div>
+						</section>
+					))}
+				</main>
+			) : (
+				<main className="grid">
+					{queue.map((v, i) => (
+						<VideoCard
+							key={v.key}
+							video={v}
+							possibleDuplicate={duplicateKeys.has(v.key)}
+							onPlay={() => goTo(i)}
+							onEdit={() => setEditing(v)}
+							onDelete={() => void removeVideo(v)}
+						/>
+					))}
+				</main>
+			)}
+
+			{editing && (
+				<EditDialog
+					video={editing}
+					groups={groupNames}
+					onClose={() => setEditing(null)}
+					onSaved={(title, group) => {
+						applyMeta(editing.key, title, group);
+						setEditing(null);
+					}}
+				/>
+			)}
 
 			{showUpload && (
 				<UploadPanel
@@ -384,7 +798,10 @@ export default function App() {
 								}}
 							/>
 							<div className="player-bar">
-								<div className="player-title">{prettyName(current.name)}</div>
+								<div className="player-title">
+									{displayTitle(current)}
+									<span className="player-group">{groupOf(current)}</span>
+								</div>
 								<div className="player-controls">
 									<button onClick={prev} title="Previous (Shift+←)">⏮ Prev</button>
 									<button onClick={next} title="Next (Shift+→)">Next ⏭</button>
@@ -404,6 +821,16 @@ export default function App() {
 										/>
 										Shuffle
 									</label>
+									<button onClick={() => setEditing(current)} title="Edit title / group">
+										✎ Edit
+									</button>
+									<button
+										className="danger"
+										onClick={() => void removeVideo(current)}
+										title="Delete this video from the bucket"
+									>
+										🗑 Delete
+									</button>
 									<button className="close" onClick={close} title="Close (Esc)">
 										✕ Close
 									</button>
@@ -420,7 +847,7 @@ export default function App() {
 										onClick={() => goTo(i)}
 									>
 										<span className="up-next-index">{i + 1}</span>
-										<span className="up-next-name">{prettyName(v.name)}</span>
+										<span className="up-next-name">{displayTitle(v)}</span>
 										<span className="up-next-size">{formatSize(v.size)}</span>
 									</li>
 								))}

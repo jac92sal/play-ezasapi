@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="MainScene" extends="Scene">
+    <script type="text/brightscript" uri="MainScene.brs" />
+    <script type="text/brightscript" uri="pkg:/source/bslib.brs" />
+    <children>
+        <Label id="title" text="play.ezasapi" translation="[60,36]" font="font:MediumBoldSystemFont" color="#e8ecf3" />
+        <Label id="status" text="" translation="[60,84]" width="1160" font="font:SmallSystemFont" color="#9aa3b2" />
+        <PosterGrid id="grid" translation="[60,124]" basePosterSize="[216,122]" itemSpacing="[20,36]" numColumns="5" numRows="3" caption1NumLines="1" caption2NumLines="1" loadingBitmapUri="pkg:/images/poster-missing.png" failedBitmapUri="pkg:/images/poster-missing.png" visible="false" />
+        <Video id="player" width="1280" height="720" translation="[0,0]" visible="false" enableUI="true" />
+        <Group id="nowPlaying" visible="false">
+            <Rectangle width="1280" height="104" color="0x000000C0" />
+            <Label id="npTitle" translation="[40,16]" width="1200" font="font:MediumBoldSystemFont" color="#e8ecf3" />
+            <Label id="npHint" translation="[40,62]" width="1200" font="font:SmallSystemFont" color="#9aa3b2" text="Down: next video    Up: previous video    *: show this    Back: video list" />
+        </Group>
+        <Timer id="npTimer" duration="4" repeat="false" />
+    </children>
+</component>
