@@ -165,7 +165,21 @@ function groupOf(video: VideoEntry): string {
 	return video.group || autoGroup(video.name) || OTHER_GROUP;
 }
 
-/** Edit the display title and group of one video. */
+function baseName(name: string): string {
+	return name.replace(/\.[^.]+$/, "");
+}
+
+const BAD_NAME_CHARS = /[<>:"/\\|?*]/;
+
+/** What a save in the edit dialog changed; `key` is new when the video was renamed. */
+interface VideoEdit {
+	oldKey: string;
+	key: string;
+	name: string;
+	group: string | null;
+}
+
+/** Rename one video (the file itself, in the bucket) and set its group. */
 function EditDialog({
 	video,
 	groups,
@@ -175,9 +189,10 @@ function EditDialog({
 	video: VideoEntry;
 	groups: string[];
 	onClose: () => void;
-	onSaved: (title: string | null, group: string | null) => void;
+	onSaved: (edit: VideoEdit) => void;
 }) {
-	const [title, setTitle] = useState(video.title ?? "");
+	// A display title from before renaming existed starts as the suggested name.
+	const [name, setName] = useState(video.title ?? baseName(video.name));
 	const [group, setGroup] = useState(video.group ?? "");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -194,17 +209,36 @@ function EditDialog({
 	const save = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (busy) return;
+		const wanted = name.trim();
+		if (BAD_NAME_CHARS.test(wanted)) {
+			setError('a name cannot contain < > : " / \\ | ? *');
+			return;
+		}
 		setBusy(true);
 		setError(null);
 		try {
+			let key = video.key;
+			let fileName = video.name;
+			if (wanted && wanted !== baseName(video.name)) {
+				const r = await fetch("/api/videos/rename", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ key: video.key, name: wanted }),
+				});
+				const data = (await r.json().catch(() => ({}))) as { key?: string; name?: string; error?: string };
+				if (!r.ok || !data.key) throw new Error(data.error ?? `HTTP ${r.status}`);
+				key = data.key;
+				fileName = data.name ?? fileName;
+			}
+			// Clears any old display title; the file name is the title now.
 			const r = await fetch("/api/videos/meta", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ key: video.key, title, group }),
+				body: JSON.stringify({ key, title: "", group }),
 			});
 			if (!r.ok) throw new Error(`HTTP ${r.status}`);
-			const data = (await r.json()) as { title: string | null; group: string | null };
-			onSaved(data.title, data.group);
+			const data = (await r.json()) as { group: string | null };
+			onSaved({ oldKey: video.key, key, name: fileName, group: data.group });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "failed");
 		} finally {
@@ -225,14 +259,14 @@ function EditDialog({
 					File: {video.name}
 				</div>
 				<label className="edit-field">
-					<span>Title</span>
+					<span>Name</span>
 					<input
 						type="text"
-						value={title}
+						value={name}
 						autoFocus
 						maxLength={200}
-						placeholder={prettyName(video.name)}
-						onChange={(e) => setTitle(e.target.value)}
+						placeholder={baseName(video.name)}
+						onChange={(e) => setName(e.target.value)}
 					/>
 				</label>
 				<label className="edit-field">
@@ -252,8 +286,9 @@ function EditDialog({
 					</datalist>
 				</label>
 				<div className="edit-hint">
-					Leave a field empty to use the name from the file
-					{guessed ? ` (group guessed as "${guessed}")` : ""}. The file itself is not renamed.
+					A new name renames the file in the bucket (the extension stays), and the PC sync
+					renames your copy to match. Leave Group empty to use the guess from the name
+					{guessed ? ` ("${guessed}")` : ""}.
 				</div>
 				{error && <div className="pin-error">Save failed: {error}</div>}
 				<div className="edit-actions">
@@ -261,7 +296,7 @@ function EditDialog({
 						Cancel
 					</button>
 					<button type="submit" className="primary" disabled={busy}>
-						{busy ? "Saving…" : "Save"}
+						{busy ? "Saving… (large videos take a minute)" : "Save"}
 					</button>
 				</div>
 			</form>
@@ -420,7 +455,7 @@ function VideoCard({
 					</button>
 					<button
 						className="card-btn"
-						title="Edit title / group"
+						title="Rename / set group"
 						onClick={(e) => {
 							e.stopPropagation();
 							onEdit();
@@ -679,18 +714,18 @@ export default function App() {
 		return out;
 	}, [queue, grouped, dupOnly]);
 
-	const applyMeta = useCallback((key: string, title: string | null, group: string | null) => {
+	const applyEdit = useCallback((edit: VideoEdit) => {
 		setVideos((list) =>
 			list.map((v) => {
-				if (v.key !== key) return v;
-				const next: VideoEntry = { ...v };
-				if (title) next.title = title;
-				else delete next.title;
-				if (group) next.group = group;
+				if (v.key !== edit.oldKey) return v;
+				const next: VideoEntry = { ...v, key: edit.key, name: edit.name };
+				delete next.title;
+				if (edit.group) next.group = edit.group;
 				else delete next.group;
 				return next;
 			}),
 		);
+		setPlayingKey((k) => (k === edit.oldKey ? edit.key : k));
 	}, []);
 
 	/** Set or clear a favorite level; updates the grid at once and undoes it if saving fails. */
@@ -922,8 +957,8 @@ export default function App() {
 					video={editing}
 					groups={groupNames}
 					onClose={() => setEditing(null)}
-					onSaved={(title, group) => {
-						applyMeta(editing.key, title, group);
+					onSaved={(edit) => {
+						applyEdit(edit);
 						setEditing(null);
 					}}
 				/>
@@ -991,7 +1026,7 @@ export default function App() {
 											</button>
 										))}
 									</span>
-									<button onClick={() => setEditing(current)} title="Edit title / group">
+									<button onClick={() => setEditing(current)} title="Rename / set group">
 										✎ Edit
 									</button>
 									<button

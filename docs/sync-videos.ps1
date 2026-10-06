@@ -1,13 +1,22 @@
 # =====================================================================
 #  sync-videos.ps1 — one-way sync C:\Videos\play.ezasapi.source -> R2
 #
-#  For every video file in the folder (and subfolders) it:
+#  First it has the site add any of its videos that are missing from its
+#  content index, so a video is recognised by its content, not just its name.
+#  Then, for every video file in the folder (and subfolders) it:
 #    1. Computes the same content fingerprint play.ezasapi.com uses
 #       (SHA-256 of first 4MB + last 4MB + file size)
-#    2. Asks the site if it's a duplicate (by content OR by filename)
-#    3. Uploads only the new ones with rclone (fast multipart, resumable)
-#    4. Registers each uploaded file's fingerprint in the site's index
-#    5. Makes a JPEG thumbnail with ffmpeg for every video in the folder that
+#    2. Asks the site whether it already has that content (under any name)
+#    3. Skips files whose video was DELETED on the site (they stay deleted)
+#    4. Keeps names in step when a video was renamed on either side:
+#         renamed on the site  -> the file here is renamed to match
+#         renamed here         -> the video on the site is renamed to match
+#       (it remembers each file's name from the last run in
+#        %LOCALAPPDATA%\play-ezasapi\sync-state.json to tell which side
+#        changed; on the first run the site's name wins)
+#    5. Uploads only content the site has never had, with rclone
+#    6. Registers each uploaded file's fingerprint in the site's index
+#    7. Makes a JPEG thumbnail with ffmpeg for every video in the folder that
 #       the site has no thumbnail for yet (new uploads and older ones), and
 #       uploads it, so the web grid and the Roku channel show real posters
 #
@@ -82,6 +91,50 @@ $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $auth = Invoke-RestMethod -Uri "$SiteBase/api/auth" -Method Post -ContentType "application/json" `
     -Body (ConvertTo-Json @{ pin = $Pin }) -WebSession $session
 if (-not $auth.ok) { throw "PIN rejected" }
+# Send the token as a header too, so every call is signed in even if the cookie isn't kept.
+if ($auth.token) { $session.Headers["Authorization"] = "Bearer " + $auth.token }
+
+# --- make sure every video on the site is in its content index ---
+# Videos uploaded before the index existed (or straight to the bucket) are
+# fingerprinted on the site, a few per request. Later runs finish at once.
+Write-Host "Checking the site's content index (the first run on a big library takes a few minutes) ..."
+$after = $null
+$siteDuplicates = @()
+do {
+    $uri = "$SiteBase/api/index/backfill?limit=10"
+    if ($after) { $uri += "&after=" + [uri]::EscapeDataString($after) }
+    $r = Invoke-RestMethod -Uri $uri -Method Post -WebSession $session -TimeoutSec 600
+    if ($r.added -gt 0) { Write-Host ("  indexed {0} more video(s)" -f $r.added) }
+    $siteDuplicates += @($r.duplicates)
+    $after = $r.next
+} while ($after)
+if ($siteDuplicates.Count -gt 0) {
+    Write-Host ("  {0} video(s) on the site are exact copies of another one; delete the copy you don't want on the site:" -f $siteDuplicates.Count)
+    foreach ($d in $siteDuplicates) { Write-Host ("    '{0}'  is a copy of  '{1}'" -f $d.key, $d.duplicateOf) }
+}
+
+# --- each file's name at the last sync (fingerprint -> key) ---
+$StateFile = Join-Path $env:LOCALAPPDATA "play-ezasapi\sync-state.json"
+$state = @{}
+if (Test-Path $StateFile) {
+    try {
+        (Get-Content $StateFile -Raw | ConvertFrom-Json).PSObject.Properties |
+            ForEach-Object { $state[$_.Name] = [string]$_.Value }
+    } catch {
+        Write-Warning "Could not read $StateFile; the site's names win this run."
+    }
+}
+function Save-State {
+    New-Item -ItemType Directory -Force -Path (Split-Path $StateFile) | Out-Null
+    $state | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
+}
+
+function Get-KeyFor([string]$FullName) {
+    return $FullName.Substring($VideoFolder.Length).TrimStart("\") -replace "\\", "/"
+}
+function Get-PathFor([string]$Key) {
+    return Join-Path $VideoFolder ($Key -replace "/", "\")
+}
 
 # --- scan folder ---
 $files = Get-ChildItem -Path $VideoFolder -Recurse -File |
@@ -89,26 +142,70 @@ $files = Get-ChildItem -Path $VideoFolder -Recurse -File |
 Write-Host ("Found {0} video file(s) in {1}" -f $files.Count, $VideoFolder)
 
 $toUpload = @()       # objects: @{ File = <FileInfo>; Key = <relative key>; Fp = <hex> }
+$local = @()          # @{ Path; Key } for each file here that is on the site (for thumbnails)
 $skippedName = 0
 $skippedContent = 0
+$skippedDeleted = 0
+$renamedHere = 0
+$renamedOnSite = 0
 
 foreach ($f in $files) {
-    $key = $f.FullName.Substring($VideoFolder.Length).TrimStart("\") -replace "\\", "/"
+    $key = Get-KeyFor $f.FullName
     Write-Host ("  {0} ... " -f $key) -NoNewline
     $fp = Get-Fingerprint $f.FullName
     $check = Invoke-RestMethod -Uri "$SiteBase/api/upload/check" -Method Post -ContentType "application/json" `
         -Body (ConvertTo-Json @{ name = $key; fingerprint = $fp }) -WebSession $session
-    if ($check.contentDuplicateOf) {
-        Write-Host ("SKIP (same content already in bucket as '{0}')" -f $check.contentDuplicateOf)
+    $siteKey = $check.contentDuplicateOf
+    if ($null -ne $check.deletedOnSite) {
+        Write-Host "SKIP (deleted on the site; delete it here too, or upload it on the website to bring it back)"
+        $skippedDeleted++
+        $state.Remove($fp)
+    } elseif (-not $siteKey) {
+        if ($check.nameExists) {
+            Write-Host "SKIP (a different video already has this name on the site)"
+            $skippedName++
+        } else {
+            Write-Host "NEW"
+            $toUpload += @{ File = $f; Key = $key; Fp = $fp }
+            $local += @{ Path = $f.FullName; Key = $key }
+        }
+    } elseif ($siteKey -eq $key) {
+        Write-Host "on the site"
+        $state[$fp] = $key
+        $local += @{ Path = $f.FullName; Key = $key }
+    } elseif (Test-Path -LiteralPath (Get-PathFor $siteKey)) {
+        Write-Host ("SKIP (same video as '{0}', which is also in this folder)" -f $siteKey)
         $skippedContent++
-    } elseif ($check.nameExists) {
-        Write-Host "SKIP (filename already in bucket)"
-        $skippedName++
+    } elseif ($state[$fp] -eq $siteKey) {
+        # Same name on both sides last time, so it was renamed here: rename it on the site.
+        try {
+            $null = Invoke-RestMethod -Uri "$SiteBase/api/videos/rename" -Method Post -ContentType "application/json" `
+                -Body (ConvertTo-Json @{ key = $siteKey; newKey = $key }) -WebSession $session -TimeoutSec 3600
+            Write-Host ("RENAMED on the site (was '{0}')" -f $siteKey)
+            $state[$fp] = $key
+            $renamedOnSite++
+            $local += @{ Path = $f.FullName; Key = $key }
+        } catch {
+            Write-Host ("could not rename '{0}' on the site: {1}" -f $siteKey, $_.Exception.Message)
+            $local += @{ Path = $f.FullName; Key = $siteKey }
+        }
     } else {
-        Write-Host "NEW"
-        $toUpload += @{ File = $f; Key = $key; Fp = $fp }
+        # Renamed on the site (or first run): give the file here the site's name.
+        $target = Get-PathFor $siteKey
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+            Move-Item -LiteralPath $f.FullName -Destination $target
+            Write-Host ("RENAMED here to '{0}' (its name on the site)" -f $siteKey)
+            $state[$fp] = $siteKey
+            $renamedHere++
+            $local += @{ Path = $target; Key = $siteKey }
+        } catch {
+            Write-Host ("on the site as '{0}' (could not rename here: {1})" -f $siteKey, $_.Exception.Message)
+            $local += @{ Path = $f.FullName; Key = $siteKey }
+        }
     }
 }
+Save-State
 
 $registered = 0
 if ($toUpload.Count -eq 0) {
@@ -132,13 +229,14 @@ foreach ($u in $toUpload) {
     try {
         $r = Invoke-RestMethod -Uri "$SiteBase/api/upload/register" -Method Post -ContentType "application/json" `
             -Body (ConvertTo-Json @{ key = $u.Key; fingerprint = $u.Fp }) -WebSession $session
-        if ($r.ok) { $registered++ }
+        if ($r.ok) { $registered++; $state[$u.Fp] = $u.Key }
     } catch {
         Write-Warning ("Could not register {0}: {1}" -f $u.Key, $_.Exception.Message)
     }
 }
 
 Remove-Item $listFile -ErrorAction SilentlyContinue
+Save-State
 }
 
 # --- thumbnails: one JPEG per video the site has none for ---
@@ -171,11 +269,11 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     foreach ($v in $listing.videos) { if (-not $v.hasThumb) { $needThumb[$v.key] = $true } }
 
     $thumbFile = Join-Path $env:TEMP "play-ezasapi-thumb.jpg"
-    foreach ($f in $files) {
-        $key = $f.FullName.Substring($VideoFolder.Length).TrimStart("\") -replace "\\", "/"
+    foreach ($l in $local) {
+        $key = $l.Key
         if (-not $needThumb.ContainsKey($key)) { continue }
         Write-Host ("  thumbnail: {0} ... " -f $key) -NoNewline
-        if (-not (New-Thumbnail $f.FullName $thumbFile)) {
+        if (-not (New-Thumbnail $l.Path $thumbFile)) {
             Write-Host "FAILED (ffmpeg could not read a frame)"
             $thumbsFailed++
             continue
@@ -193,4 +291,5 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "---------------------------------------------"
-Write-Host ("Done. Uploaded + registered: {0}. Skipped: {1} same-content, {2} same-name. Thumbnails made: {3}, failed: {4}." -f $registered, $skippedContent, $skippedName, $thumbsMade, $thumbsFailed)
+Write-Host ("Done. Uploaded + registered: {0}. Renamed here: {1}, on the site: {2}. Skipped: {3} deleted on the site, {4} same-content, {5} same-name. Thumbnails made: {6}, failed: {7}." -f `
+    $registered, $renamedHere, $renamedOnSite, $skippedDeleted, $skippedContent, $skippedName, $thumbsMade, $thumbsFailed)
