@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="ApiTask" extends="Task">
+    <interface>
+        <field id="mode" type="string" />
+        <field id="baseUrl" type="string" />
+        <field id="pin" type="string" />
+        <field id="token" type="string" />
+        <field id="status" type="integer" alwaysNotify="true" />
+        <field id="result" type="assocarray" />
+    </interface>
+    <script type="text/brightscript" uri="ApiTask.brs" />
+    <script type="text/brightscript" uri="pkg:/source/bslib.brs" />
+</component>

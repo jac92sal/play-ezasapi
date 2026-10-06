@@ -1,5 +1,5 @@
 # =====================================================================
-#  sync-videos.ps1 — one-way sync C:\Users\jacob\OneDrive\Videos -> R2
+#  sync-videos.ps1 — one-way sync C:\Videos\play.ezasapi.source -> R2
 #
 #  For every video file in the folder (and subfolders) it:
 #    1. Computes the same content fingerprint play.ezasapi.com uses
@@ -10,18 +10,31 @@
 #
 #  Requirements (one-time setup — see instructions in chat):
 #    - rclone installed, with an "r2" remote configured for the bucket
+#
+#  Run it from the folder that holds this script (not from System32):
+#    cd <your clone>\docs
+#    $env:PLAY_PIN = "<the site PIN>"     # optional; it prompts if unset
+#    .\sync-videos.ps1
 # =====================================================================
 
 # ===== CONFIG =====
-$VideoFolder  = "C:\Users\jacob\OneDrive\Videos"
+# The folder you drop videos into. Override per shell with $env:PLAY_VIDEO_FOLDER.
+$VideoFolder  = if ($env:PLAY_VIDEO_FOLDER) { $env:PLAY_VIDEO_FOLDER } else { "C:\Videos\play.ezasapi.source" }
 $SiteBase     = "https://play.ezasapi.com"
-$Pin          = "4040"
+# PIN is never stored here. Set it once per shell:  $env:PLAY_PIN = "...."
+# or leave it unset and the script prompts for it.
+$Pin          = $env:PLAY_PIN
 $RcloneRemote = "r2"
 $Bucket       = "entertainmentvideos"
 $Extensions   = @(".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi", ".ogv")
 # ==================
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Pin)) {
+    $secure = Read-Host -Prompt "play.ezasapi PIN" -AsSecureString
+    $Pin = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+}
 $FpChunk = 4MB
 
 function Get-Fingerprint([string]$Path) {

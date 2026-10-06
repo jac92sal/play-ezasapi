@@ -42,21 +42,28 @@ app.post("/api/auth", async (c) => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		return c.json({ ok: false }, 401);
 	}
-	setCookie(c, AUTH_COOKIE, await authToken(c.env.PLAY_PIN), {
+	const token = await authToken(c.env.PLAY_PIN);
+	setCookie(c, AUTH_COOKIE, token, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "Lax",
 		path: "/",
 		maxAge: 60 * 60 * 24 * 30,
 	});
-	return c.json({ ok: true });
+	// The token is also returned for non-browser clients (the Roku channel).
+	return c.json({ ok: true, token });
 });
 
-/** Everything else under /api requires the auth cookie. */
+/**
+ * Everything else under /api requires the auth token. Browsers send it as the
+ * HttpOnly cookie; the Roku channel (whose Poster/Video nodes cannot set
+ * headers) sends it as `Authorization: Bearer <token>` or `?auth=<token>`.
+ */
 app.use("/api/*", async (c, next) => {
 	if (c.req.path === "/api/auth") return next();
-	const cookie = getCookie(c, AUTH_COOKIE);
-	if (!cookie || !timingSafeEqual(cookie, await authToken(c.env.PLAY_PIN))) {
+	const bearer = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "");
+	const presented = getCookie(c, AUTH_COOKIE) ?? bearer ?? c.req.query("auth");
+	if (!presented || !timingSafeEqual(presented, await authToken(c.env.PLAY_PIN))) {
 		return c.json({ error: "unauthorized" }, 401);
 	}
 	return next();
@@ -89,13 +96,54 @@ export interface VideoEntry {
 	uploaded: string;
 	contentType: string;
 	etag: string;
+	/** Display title set in the web app (overrides the file name). */
+	title?: string;
+	/** Studio / collection set in the web app (overrides the name-based guess). */
+	group?: string;
+	/** Whether a pre-generated JPEG exists at `.thumbnails/<key>.jpg`. */
+	hasThumb: boolean;
+}
+
+const THUMB_PREFIX = ".thumbnails/";
+const THUMB_SUFFIX = ".jpg";
+
+function thumbKeyFor(videoKey: string): string {
+	return `${THUMB_PREFIX}${videoKey}${THUMB_SUFFIX}`;
+}
+
+/* ---------------- titles + groups ---------------- */
+
+/** One KV value holds every per-video override, keyed by object key. */
+const META_KV_KEY = "library-meta";
+const META_FIELD_MAX = 200;
+
+interface VideoMeta {
+	title?: string;
+	group?: string;
+}
+
+async function readMeta(kv: KVNamespace): Promise<Record<string, VideoMeta>> {
+	const raw = await kv.get(META_KV_KEY);
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return parsed && typeof parsed === "object" ? (parsed as Record<string, VideoMeta>) : {};
+	} catch {
+		return {};
+	}
+}
+
+function writeMeta(kv: KVNamespace, meta: Record<string, VideoMeta>): Promise<void> {
+	return kv.put(META_KV_KEY, JSON.stringify(meta));
 }
 
 /** List every video object in the bucket (paginates through the full listing). */
 app.get("/api/videos", async (c) => {
 	const bucket = c.env.ENTERTAINMENTVIDEOS;
 	const videos: VideoEntry[] = [];
+	const thumbKeys = new Set<string>();
 	let cursor: string | undefined;
+	const metaPromise = readMeta(c.env.HASHES);
 
 	do {
 		const page = await bucket.list({
@@ -104,6 +152,12 @@ app.get("/api/videos", async (c) => {
 			include: ["httpMetadata"],
 		});
 		for (const obj of page.objects) {
+			if (obj.key.startsWith(THUMB_PREFIX)) {
+				if (obj.key.endsWith(THUMB_SUFFIX)) {
+					thumbKeys.add(obj.key.slice(THUMB_PREFIX.length, -THUMB_SUFFIX.length));
+				}
+				continue;
+			}
 			if (!(extensionOf(obj.key) in VIDEO_EXTENSIONS)) continue;
 			videos.push({
 				key: obj.key,
@@ -112,10 +166,20 @@ app.get("/api/videos", async (c) => {
 				uploaded: obj.uploaded.toISOString(),
 				contentType: contentTypeFor(obj.key, obj.httpMetadata?.contentType),
 				etag: obj.httpEtag,
+				hasThumb: false,
 			});
 		}
 		cursor = page.truncated ? page.cursor : undefined;
 	} while (cursor);
+
+	for (const video of videos) video.hasThumb = thumbKeys.has(video.key);
+	const meta = await metaPromise;
+	for (const video of videos) {
+		const m = meta[video.key];
+		if (!m) continue;
+		if (m.title) video.title = m.title;
+		if (m.group) video.group = m.group;
+	}
 
 	return c.json(
 		{ videos, count: videos.length },
@@ -176,9 +240,152 @@ app.on(["GET", "HEAD"], "/api/stream/:key{.+}", async (c) => {
 	return new Response(object.body, { status: 200, headers });
 });
 
+/**
+ * Pre-generated JPEG thumbnail for a video, stored at `.thumbnails/<key>.jpg`.
+ *
+ * When no thumbnail exists the generic placeholder poster is served instead of
+ * a 404, so image-only clients (the Roku PosterGrid) still get a tile. That
+ * response is marked with `X-Thumb-Placeholder: 1` and cached only briefly so
+ * a later-generated thumbnail shows up quickly.
+ */
+app.get("/api/thumb/:key{.+}", async (c) => {
+	const key = decodeURIComponent(c.req.param("key"));
+	const object = await c.env.ENTERTAINMENTVIDEOS.get(thumbKeyFor(key));
+	if (!object) {
+		const placeholder = await c.env.ASSETS.fetch(
+			new URL("/thumb-placeholder.png", c.req.url),
+		);
+		if (!placeholder.ok) return c.notFound();
+		return new Response(placeholder.body, {
+			status: 200,
+			headers: {
+				"Content-Type": "image/png",
+				"Cache-Control": "public, max-age=300",
+				"X-Thumb-Placeholder": "1",
+			},
+		});
+	}
+
+	return new Response(object.body, {
+		status: 200,
+		headers: {
+			"Content-Type": "image/jpeg",
+			"Content-Length": String(object.size),
+			ETag: object.httpEtag,
+			"Cache-Control": "public, max-age=86400, s-maxage=604800",
+		},
+	});
+});
+
 /* ---------------- uploads ---------------- */
 
 const FP_PREFIX = "fp:";
+
+/** 4 MB — the slice size the upload fingerprint uses on each end of a file. */
+const FP_CHUNK = 4 * 1024 * 1024;
+
+/**
+ * Content fingerprint of a stored object, computed the same way the upload
+ * page does it: SHA-256 of (first 4 MB + last 4 MB + decimal size), or of the
+ * whole file plus size when it is 8 MB or smaller.
+ */
+async function fingerprintObject(bucket: R2Bucket, key: string, size: number): Promise<string | null> {
+	const chunks: Uint8Array[] = [];
+	if (size <= 2 * FP_CHUNK) {
+		const whole = await bucket.get(key);
+		if (!whole) return null;
+		chunks.push(new Uint8Array(await whole.arrayBuffer()));
+	} else {
+		const [head, tail] = await Promise.all([
+			bucket.get(key, { range: { offset: 0, length: FP_CHUNK } }),
+			bucket.get(key, { range: { suffix: FP_CHUNK } }),
+		]);
+		if (!head || !tail) return null;
+		chunks.push(new Uint8Array(await head.arrayBuffer()), new Uint8Array(await tail.arrayBuffer()));
+	}
+	chunks.push(new TextEncoder().encode(String(size)));
+	const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+	const data = new Uint8Array(total);
+	let offset = 0;
+	for (const c of chunks) {
+		data.set(c, offset);
+		offset += c.byteLength;
+	}
+	const digest = await crypto.subtle.digest("SHA-256", data);
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Set or clear the display title and group of a video. Send an empty string
+ * (or omit the field) to clear it; the file in the bucket is never renamed.
+ */
+app.post("/api/videos/meta", async (c) => {
+	const body = await c.req.json<{ key?: string; title?: string; group?: string }>().catch(() => null);
+	const key = body?.key;
+	if (!key || badKey(key)) return c.json({ error: "bad key" }, 400);
+	const clean = (v: unknown): string | undefined => {
+		if (typeof v !== "string") return undefined;
+		const t = v.trim().replace(/\s+/g, " ");
+		return t.length > 0 ? t.slice(0, META_FIELD_MAX) : undefined;
+	};
+	const head = await c.env.ENTERTAINMENTVIDEOS.head(key);
+	if (!head) return c.json({ error: "not found" }, 404);
+
+	const meta = await readMeta(c.env.HASHES);
+	const entry: VideoMeta = {};
+	const title = clean(body?.title);
+	const group = clean(body?.group);
+	if (title) entry.title = title;
+	if (group) entry.group = group;
+	if (Object.keys(entry).length > 0) meta[key] = entry;
+	else delete meta[key];
+	await writeMeta(c.env.HASHES, meta);
+	return c.json({ ok: true, key, title: entry.title ?? null, group: entry.group ?? null });
+});
+
+/**
+ * Delete a video. Removes the object, its `.thumbnails/<key>.jpg`, and the
+ * fingerprint index entry if it points at this key (so the same content can
+ * be uploaded again later without being reported as a duplicate of a file
+ * that no longer exists).
+ */
+app.delete("/api/videos/:key{.+}", async (c) => {
+	const key = decodeURIComponent(c.req.param("key"));
+	if (badKey(key) || key.startsWith(THUMB_PREFIX)) return c.json({ error: "bad key" }, 400);
+	const bucket = c.env.ENTERTAINMENTVIDEOS;
+
+	const head = await bucket.head(key);
+	if (!head) return c.json({ error: "not found" }, 404);
+
+	let fingerprintCleared = false;
+	const fingerprint = await fingerprintObject(bucket, key, head.size).catch(() => null);
+	if (fingerprint) {
+		const fpKey = `${FP_PREFIX}${fingerprint}`;
+		const hit = await c.env.HASHES.get(fpKey);
+		if (hit) {
+			let indexed: string | undefined;
+			try {
+				indexed = (JSON.parse(hit) as { key?: string }).key;
+			} catch {
+				indexed = hit;
+			}
+			if (indexed === key) {
+				await c.env.HASHES.delete(fpKey);
+				fingerprintCleared = true;
+			}
+		}
+	}
+
+	const thumbKey = `${THUMB_PREFIX}${key}.jpg`;
+	await bucket.delete([key, thumbKey]);
+
+	const meta = await readMeta(c.env.HASHES);
+	if (meta[key]) {
+		delete meta[key];
+		await writeMeta(c.env.HASHES, meta);
+	}
+	return c.json({ ok: true, key, size: head.size, fingerprintCleared });
+});
 
 function badKey(key: string): boolean {
 	return (
