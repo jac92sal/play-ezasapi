@@ -27,6 +27,11 @@ Grid of lazy-loaded first-frame previews → click to open player overlay with
 search, sort (newest/oldest/name/size), autoplay-next, shuffle, and an Up Next
 queue. Keyboard: Esc close, Shift+←/→ prev/next.
 
+The list refreshes without a page reload: a ↻ Refresh button in the top bar,
+a silent re-fetch whenever the tab regains focus/visibility, and a 60s
+background poll while visible. The playing video is tracked by key, so a
+refresh mid-playback never jumps to a different video.
+
 ## Commands
 
 - `npm run dev` — local dev (real Workers runtime via Vite plugin)
