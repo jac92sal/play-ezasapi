@@ -252,8 +252,9 @@ function EditDialog({
 /**
  * Grid card — loads its preview only once scrolled into view. Uses the
  * pre-generated JPEG thumbnail; when the bucket has none (or the image fails
- * to load) it shows the video's name on the tile instead, so every card is
- * identifiable even without artwork.
+ * to load) it shows a frame from the video itself, as newly synced videos have
+ * no JPEG yet. Only if the video can't load either does it show the video's
+ * name on the tile, so every card is identifiable even without artwork.
  */
 function VideoCard({
 	video,
@@ -271,7 +272,9 @@ function VideoCard({
 	const ref = useRef<HTMLDivElement>(null);
 	const [visible, setVisible] = useState(false);
 	const [thumbFailed, setThumbFailed] = useState(false);
-	const showTitleTile = video.hasThumb === false || thumbFailed;
+	const [frameFailed, setFrameFailed] = useState(false);
+	const useFrame = video.hasThumb === false || thumbFailed;
+	const showTitleTile = useFrame && frameFailed;
 
 	useEffect(() => {
 		const el = ref.current;
@@ -298,6 +301,14 @@ function VideoCard({
 					</div>
 				) : !visible ? (
 					<div className="thumb-placeholder" />
+				) : useFrame ? (
+					<video
+						src={`${streamUrl(video.key)}#t=0.5`}
+						preload="metadata"
+						muted
+						playsInline
+						onError={() => setFrameFailed(true)}
+					/>
 				) : (
 					<img
 						src={thumbUrl(video.key)}
