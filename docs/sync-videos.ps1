@@ -62,6 +62,7 @@ $MaxSiteDeletes = 10
 # ==================
 
 $ErrorActionPreference = "Stop"
+if ($DryRun) { Write-Host "DRY RUN: nothing will be changed on the site or in the folder." }
 if ([string]::IsNullOrWhiteSpace($Pin)) {
     $secure = Read-Host -Prompt "play.ezasapi PIN" -AsSecureString
     $Pin = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
@@ -115,25 +116,32 @@ if ($auth.token) { $session.Headers["Authorization"] = "Bearer " + $auth.token }
 # --- make sure every video on the site is in its content index ---
 # Videos uploaded before the index existed (or straight to the bucket) are
 # fingerprinted on the site, a few per request. Later runs finish at once.
-Write-Host "Checking the site's content index (the first run on a big library takes a few minutes) ..."
-$after = $null
+# This writes to the site, so a dry run skips it.
 $siteDuplicates = @()
-do {
-    $uri = "$SiteBase/api/index/backfill?limit=10"
-    if ($after) { $uri += "&after=" + [uri]::EscapeDataString($after) }
-    $r = Invoke-RestMethod -Uri $uri -Method Post -WebSession $session -TimeoutSec 600
-    if ($r.added -gt 0) { Write-Host ("  indexed {0} more video(s)" -f $r.added) }
-    $siteDuplicates += @($r.duplicates)
-    $after = $r.next
-} while ($after)
+if ($DryRun) {
+    Write-Host "DRY RUN: skipping the site's content index update. Site videos it has not indexed yet may show below as uploads or downloads."
+} else {
+    Write-Host "Checking the site's content index (the first run on a big library takes a few minutes) ..."
+    $after = $null
+    do {
+        $uri = "$SiteBase/api/index/backfill?limit=10"
+        if ($after) { $uri += "&after=" + [uri]::EscapeDataString($after) }
+        $r = Invoke-RestMethod -Uri $uri -Method Post -WebSession $session -TimeoutSec 600
+        if ($r.added -gt 0) { Write-Host ("  indexed {0} more video(s)" -f $r.added) }
+        $siteDuplicates += @($r.duplicates)
+        $after = $r.next
+    } while ($after)
+}
 if ($siteDuplicates.Count -gt 0) {
     Write-Host ("  {0} video(s) on the site are exact copies of another one; delete the copy you don't want on the site:" -f $siteDuplicates.Count)
     foreach ($d in $siteDuplicates) { Write-Host ("    '{0}'  is a copy of  '{1}'" -f $d.key, $d.duplicateOf) }
 }
 
 # --- videos on both sides at the last sync (fingerprint -> key) ---
-# "_twoWay" marks a state file written by this two-way version. Without it
-# (first run after updating) nothing is deleted on the site.
+# "_twoWay" marks a state file that has been through the two-way checks for
+# deletions at least once. Without it (first run after updating, or a first
+# run that was interrupted before those checks finished) nothing is deleted
+# on the site.
 $StateFile = Join-Path $env:LOCALAPPDATA "play-ezasapi\sync-state.json"
 $state = @{}
 $twoWay = $false
@@ -148,7 +156,8 @@ if (Test-Path $StateFile) {
 }
 function Save-State {
     if ($DryRun) { return }
-    $out = @{ "_twoWay" = "1" }
+    $out = @{}
+    if ($twoWay) { $out["_twoWay"] = "1" }
     foreach ($k in $state.Keys) { $out[$k] = $state[$k] }
     New-Item -ItemType Directory -Force -Path (Split-Path $StateFile) | Out-Null
     $out | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
@@ -179,7 +188,6 @@ function Remove-ToRecycleBin([string]$Path) {
         Remove-Item -LiteralPath $Path
     }
 }
-if ($DryRun) { Write-Host "DRY RUN: nothing will be changed on the site or in the folder." }
 
 # --- scan folder ---
 $files = @(Get-ChildItem -Path $VideoFolder -Recurse -File |
@@ -343,6 +351,8 @@ foreach ($d in $deleteOnSite) {
         Write-Host ("could not delete it on the site: {0}" -f $_.Exception.Message)
     }
 }
+# Deletions are reconciled, so from now on a video missing here means it was deleted here.
+$twoWay = $true
 Save-State
 
 $registered = 0
