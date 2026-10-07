@@ -27,12 +27,24 @@ recognised by its content whatever its file name is.
   entry move with it.
 - **Delete** on the website removes the file and leaves a "deleted" marker on
   its fingerprint, so the PC sync never uploads that video again.
-- **`docs/sync-videos.ps1`** keeps names in step both ways. A video renamed on
-  the site gets renamed in `C:\Videos\play.ezasapi.source`, and a file renamed
-  there gets renamed on the site. Files deleted on the site are skipped. It
-  also has the site fingerprint older videos that were not indexed yet
-  (`POST /api/index/backfill`), which is what let renamed files sneak back in
-  as duplicates before.
+- **`docs/sync-videos.ps1`** keeps `C:\Videos\play.ezasapi.source` and the
+  site in step **both ways**, matching videos by content so a rename is never
+  mistaken for a delete:
+
+  | Change | Made on the PC | Made on the site |
+  |---|---|---|
+  | Add | uploaded to the site | downloaded to the PC |
+  | Rename | renamed on the site | renamed on the PC |
+  | Delete | deleted on the site | sent to the PC's Recycle Bin |
+
+  Safety: `-DryRun` shows what would change without changing anything. The
+  first run after updating from the old one-way script deletes nothing on the
+  site (videos missing from the PC are downloaded back instead). More than 10
+  site deletions in one run are held back until you run it with `-Yes`, and
+  it stops if the folder is empty (e.g. the drive is not connected). To bring
+  back a video deleted on the site, upload it again on the website. It also
+  has the site fingerprint older videos that were not indexed yet
+  (`POST /api/index/backfill`).
 
 | Piece | Where | What it is |
 |---|---|---|
